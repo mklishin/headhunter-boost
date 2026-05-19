@@ -96,7 +96,7 @@ https://raw.githubusercontent.com/mklishin/headhunter-boost/main/headhunter-boos
 ```
 https://hh.ru/search/vacancy?resume=ВАШ_ID&from=resumelist
 ```
-На странице поиска выбере необходимые фильтры. Обзательно укажите страну поиска галочкой, потому что сейчас модалка при отклике в страну, отличную от страны в резюме, ломает флоу.
+На странице поиска выберите необходимые фильтры. Обзательно укажите страну поиска галочкой, потому что сейчас модалка при отклике в страну, отличную от страны в резюме, ломает флоу.
 <img width="1000" height="594" alt="resume-to-serach" src="https://github.com/user-attachments/assets/f97f689a-36dc-4ef6-82ca-085829744217" />
 
 
