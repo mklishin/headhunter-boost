@@ -1,23 +1,26 @@
 // ==UserScript==
-// @name         HeadHunter Boost
-// @name:ru      HeadHunter Boost
-// @namespace    https://github.com/mklishin/headhunter-boost
-// @version      6.1
-// @description  Автоматическая отправка откликов на hh.ru — шаблоны писем, пропуск сложных вакансий, человекоподобное поведение
-// @description:ru  Автоматическая отправка откликов на hh.ru — шаблоны писем, пропуск сложных вакансий, человекоподобное поведение
-// @description:en  Auto-apply to jobs on hh.ru — cover letter templates, smart skipping, human-like interaction
-// @author       mklishin
-// @license      MIT
-// @homepageURL  https://github.com/mklishin/headhunter-boost
-// @supportURL   https://github.com/mklishin/headhunter-boost/issues
-// @downloadURL  https://raw.githubusercontent.com/mklishin/headhunter-boost/main/headhunter-boost.user.js
-// @updateURL    https://raw.githubusercontent.com/mklishin/headhunter-boost/main/headhunter-boost.user.js
-// @match        *://*.hh.ru/*
-// @grant        GM_getValue
-// @grant        GM_setValue
-// @run-at       document-end
-// @noframes
+// @name            HeadHunter Boost — автоматические отклики на hh.ru
+// @name:en         HeadHunter Boost — auto apply to vacancies on hh.ru
+// @namespace       https://github.com/mklishin/headhunter-boost
+// @version         6.1
+// @description     Автоматически нажимает «Откликнуться», подставляет сопроводительное письмо из шаблона и отправляет отклик на hh.ru. Поддержка до 5 шаблонов, рандомизация задержки, пропуск вакансий с тестами, счётчики и журнал событий. Бесплатно, без Node.js.
+// @description:en  Automatically clicks "Apply", fills in a cover letter from your template and submits the application on hh.ru. Up to 5 templates, randomized delays, skips vacancies requiring tests. Free, no setup needed.
+// @author          mklishin
+// @homepage        https://mklishin.github.io/
+// @supportURL      https://github.com/mklishin/headhunter-boost/issues
+// @updateURL       https://raw.githubusercontent.com/mklishin/headhunter-boost/main/headhunter-boost.user.js
+// @downloadURL     https://raw.githubusercontent.com/mklishin/headhunter-boost/main/headhunter-boost.user.js
+// @icon            https://hh.ru/favicon.ico
+// @match           https://hh.ru/*
+// @match           https://*.hh.ru/*
+// @grant           GM_getValue
+// @grant           GM_setValue
+// @grant           GM_deleteValue
+// @grant           GM_listValues
+// @run-at          document-idle
+// @license         MIT
 // ==/UserScript==
+
 
 // ─── DESIGN NOTES ────────────────────────────────────────────────────────────
 //
