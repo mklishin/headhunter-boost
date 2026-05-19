@@ -97,6 +97,8 @@ https://raw.githubusercontent.com/mklishin/headhunter-boost/main/headhunter-boos
 https://hh.ru/search/vacancy?resume=ВАШ_ID&from=resumelist
 ```
 На странице поиска выбере необходимые фильтры. Обзательно укажите страну поиска галочкой, потому что сейчас модалка при отклике в страну, отличную от страны в резюме, ломает флоу.
+<img width="1000" height="594" alt="resume-to-serach" src="https://github.com/user-attachments/assets/f97f689a-36dc-4ef6-82ca-085829744217" />
+
 
 ### 2. Найдите панель управления
 <img width="416" height="736" alt="settings" src="https://github.com/user-attachments/assets/a61e9550-31c2-4ae3-ac89-dc2d7de89743" />
@@ -194,6 +196,7 @@ https://hh.ru/resume/ab12cd34ef56gh78ij90kl12mn34op56
 
 **Скрипт не находит кнопки «Откликнуться»**
 hh.ru регулярно обновляет разметку страницы. Проверьте, что вы на странице результатов поиска (не на странице вакансии).
+Заидите на страницу поичка вакансии на ХХ, убедитесь, что ораневое окошко повилось, намите Ctrl + Shift + R / Command + Shift + R.
 
 **Скрипт завис после перехода на страницу вакансии**
 Это редкий случай, когда `history.back()` не сработал. Нажмите кнопку «назад» в браузере вручную — скрипт возобновится автоматически.
