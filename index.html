@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+  <!-- ── Primary SEO ──────────────────────────────────────────────────── -->
+  <title>HeadHunter Boost — автоматические отклики на hh.ru | Tampermonkey скрипт</title>
+  <meta name="description"
+    content="Бесплатный Tampermonkey-скрипт для автоматизации откликов на hh.ru. Сам нажимает «Откликнуться», подставляет сопроводительное письмо и отправляет отклик. Без Node.js, без регистрации. До 200 вакансий в сутки." />
+  <meta name="keywords"
+    content="hh.ru автоотклик, headhunter автоматические отклики, tampermonkey скрипт hh, автоматизация откликов, ускорить отклики хедхантер, userscript hh.ru, скрипт отклик вакансии, auto apply hh.ru" />
+  <link rel="canonical" href="https://mklishin.github.io/headhunter-boost/" />
+
+  <!-- ── Open Graph ────────────────────────────────────────────────────── -->
+  <meta property="og:type"        content="website" />
+  <meta property="og:title"       content="HeadHunter Boost — автоматические отклики на hh.ru" />
+  <meta property="og:description" content="Бесплатный Tampermonkey-скрипт: автоотклик на вакансии hh.ru, до 5 шаблонов сопроводительного письма, рандомизация задержек, журнал событий. Без регистрации." />
+  <meta property="og:url"         content="https://mklishin.github.io/headhunter-boost/" />
+  <meta property="og:image"       content="https://raw.githubusercontent.com/mklishin/headhunter-boost/main/main.jpg" />
+  <meta property="og:image:alt"   content="Панель управления HeadHunter Boost на странице поиска вакансий hh.ru" />
+  <meta property="og:locale"      content="ru_RU" />
+
+  <!-- ── Twitter Card ─────────────────────────────────────────────────── -->
+  <meta name="twitter:card"        content="summary_large_image" />
+  <meta name="twitter:title"       content="HeadHunter Boost — автоматические отклики на hh.ru" />
+  <meta name="twitter:description" content="Бесплатный Tampermonkey-скрипт для автоотклика на hh.ru. Без Node.js, без регистрации." />
+  <meta name="twitter:image"       content="https://raw.githubusercontent.com/mklishin/headhunter-boost/main/main.jpg" />
+
+  <!-- ── Schema.org: SoftwareApplication ─────────────────────────────── -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": "HeadHunter Boost",
+    "alternateName": [
+      "hh.ru автоотклик",
+      "headhunter автоматические отклики",
+      "ускорить отклики хедхантер",
+      "hh.ru auto apply userscript"
+    ],
+    "description": "Tampermonkey-скрипт для автоматизации массовых откликов на hh.ru. Автоматически нажимает «Откликнуться», подставляет сопроводительное письмо из шаблона и отправляет отклик. Поддерживает до 5 шаблонов, рандомизацию задержек, пропуск вакансий с тестами. Бесплатно, без Node.js.",
+    "url": "https://github.com/mklishin/headhunter-boost",
+    "downloadUrl": "https://raw.githubusercontent.com/mklishin/headhunter-boost/main/headhunter-boost.user.js",
+    "applicationCategory": "UtilitiesApplication",
+    "applicationSubCategory": "Browser Userscript",
+    "operatingSystem": ["Windows", "macOS", "Linux"],
+    "browserRequirements": "Requires Tampermonkey, Violentmonkey, or Greasemonkey (Chrome, Firefox, Edge, Opera, Yandex Browser)",
+    "softwareVersion": "6.1",
+    "datePublished": "2025-01-01",
+    "dateModified": "2025-05-01",
+    "inLanguage": ["ru", "en"],
+    "author": {
+      "@type": "Person",
+      "name": "mklishin",
+      "url": "https://github.com/mklishin"
+    },
+    "license": "https://opensource.org/licenses/MIT",
+    "offers": {
+      "@type": "Offer",
+      "price": "0",
+      "priceCurrency": "RUB",
+      "availability": "https://schema.org/InStock"
+    },
+    "featureList": [
+      "Автоматическая отправка откликов на hh.ru",
+      "До 5 шаблонов сопроводительного письма с подстановкой {JOB_TITLE}",
+      "Случайный выбор шаблона для каждого отклика",
+      "Рандомизация задержки по гауссову распределению",
+      "Пропуск вакансий с тестами и дополнительными вопросами",
+      "Автостоп при достижении суточного лимита hh.ru (200 откликов)",
+      "Перетаскиваемая панель управления",
+      "Журнал событий и счётчики в реальном времени",
+      "SPA-навигация без перезагрузки страницы",
+      "Сохранение состояния между перезагрузками"
+    ],
+    "isAccessibleForFree": true,
+    "codeRepository": "https://github.com/mklishin/headhunter-boost",
+    "programmingLanguage": "JavaScript",
+    "screenshot": [
+      {
+        "@type": "ImageObject",
+        "url": "https://raw.githubusercontent.com/mklishin/headhunter-boost/main/main.jpg",
+        "caption": "Главный экран HeadHunter Boost — панель управления на странице поиска hh.ru"
+      },
+      {
+        "@type": "ImageObject",
+        "url": "https://raw.githubusercontent.com/mklishin/headhunter-boost/main/settings.jpg",
+        "caption": "Настройки HeadHunter Boost — шаблоны писем, Resume ID, задержка"
+      }
+    ]
+  }
+  </script>
+
+  <!-- ── Schema.org: FAQPage ──────────────────────────────────────────── -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    "mainEntity": [
+      {
+        "@type": "Question",
+        "name": "Как автоматически откликаться на вакансии hh.ru бесплатно?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Установите Tampermonkey и скрипт HeadHunter Boost по ссылке https://raw.githubusercontent.com/mklishin/headhunter-boost/main/headhunter-boost.user.js. Перейдите на страницу поиска вакансий hh.ru с выбранным резюме, введите ваш Resume ID в настройках скрипта и нажмите «Начать отправку». Скрипт сам нажмёт «Откликнуться» и отправит сопроводительное письмо для каждой вакансии."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Сколько откликов в день можно отправить на hh.ru?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "hh.ru позволяет отправлять до 200 откликов в сутки. HeadHunter Boost автоматически останавливается при достижении этого лимита и показывает уведомление."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Нужно ли устанавливать Node.js или другие программы?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Нет. Скрипт работает прямо в браузере через Tampermonkey. Установка Node.js, Python, сборка или редактирование кода не требуются."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "В каких браузерах работает скрипт автоотклика на hh.ru?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Скрипт работает в любом браузере с поддержкой Tampermonkey: Chrome, Firefox, Edge, Opera, Яндекс Браузер. Также совместим с Violentmonkey и Greasemonkey."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Что происходит с вакансиями, требующими теста или дополнительных вопросов?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Такие вакансии автоматически пропускаются и сохраняются в отдельный список с заголовком, ссылкой и временем. Вы можете вернуться к ним вручную в удобное время."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Можно ли настроить разные сопроводительные письма для разных вакансий?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Да. HeadHunter Boost поддерживает до 5 шаблонов сопроводительного письма. Можно включить случайный выбор шаблона при каждом отклике. В любом шаблоне доступна переменная {JOB_TITLE}, которая автоматически заменяется на название вакансии."
+        }
+      }
+    ]
+  }
+  </script>
+
+  <!-- ── Redirect to GitHub ────────────────────────────────────────────── -->
+  <meta http-equiv="refresh" content="3;url=https://github.com/mklishin/headhunter-boost" />
+
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0d1117;
+      color: #e6edf3;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      padding: 2rem;
+    }
+    .card {
+      max-width: 520px;
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 12px;
+      padding: 2.5rem 2rem;
+    }
+    .emoji { font-size: 3rem; margin-bottom: 1rem; }
+    h1 { font-size: 1.4rem; margin-bottom: 0.75rem; color: #f0f6fc; }
+    p  { color: #8b949e; line-height: 1.6; margin-bottom: 1.5rem; }
+    .btn {
+      display: inline-block;
+      background: #238636;
+      color: #fff;
+      text-decoration: none;
+      padding: 0.65rem 1.5rem;
+      border-radius: 6px;
+      font-weight: 600;
+      font-size: 0.95rem;
+      transition: background 0.2s;
+    }
+    .btn:hover { background: #2ea043; }
+    .note { font-size: 0.8rem; color: #6e7681; margin-top: 1.25rem; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="emoji">🚀</div>
+    <h1>HeadHunter Boost</h1>
+    <p>Tampermonkey-скрипт для автоматических откликов на hh.ru.<br>Бесплатно, без Node.js, без регистрации.</p>
+    <a class="btn" href="https://github.com/mklishin/headhunter-boost">Перейти на GitHub →</a>
+    <p class="note">Переход через 3 секунды…</p>
+  </div>
+</body>
+</html>
