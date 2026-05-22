@@ -1,26 +1,23 @@
 // ==UserScript==
-// @name            HeadHunter Boost — автоматические отклики на hh.ru
-// @name:en         HeadHunter Boost — auto apply to vacancies on hh.ru
-// @namespace       https://github.com/mklishin/headhunter-boost
-// @version         6.1
-// @description     Автоматически нажимает «Откликнуться», подставляет сопроводительное письмо из шаблона и отправляет отклик на hh.ru. Поддержка до 5 шаблонов, рандомизация задержки, пропуск вакансий с тестами, счётчики и журнал событий. Бесплатно, без Node.js.
-// @description:en  Automatically clicks "Apply", fills in a cover letter from your template and submits the application on hh.ru. Up to 5 templates, randomized delays, skips vacancies requiring tests. Free, no setup needed.
-// @author          mklishin
-// @homepage        https://mklishin.github.io/
-// @supportURL      https://github.com/mklishin/headhunter-boost/issues
-// @updateURL       https://raw.githubusercontent.com/mklishin/headhunter-boost/main/headhunter-boost.user.js
-// @downloadURL     https://raw.githubusercontent.com/mklishin/headhunter-boost/main/headhunter-boost.user.js
-// @icon            https://hh.ru/favicon.ico
-// @match           https://hh.ru/*
-// @match           https://*.hh.ru/*
-// @grant           GM_getValue
-// @grant           GM_setValue
-// @grant           GM_deleteValue
-// @grant           GM_listValues
-// @run-at          document-idle
-// @license         MIT
+// @name         HeadHunter Boost
+// @name:ru      HeadHunter Boost
+// @namespace    https://github.com/mklishin/headhunter-boost
+// @version      6.1
+// @description  Автоматическая отправка откликов на hh.ru — шаблоны писем, пропуск сложных вакансий, человекоподобное поведение
+// @description:ru  Автоматическая отправка откликов на hh.ru — шаблоны писем, пропуск сложных вакансий, человекоподобное поведение
+// @description:en  Auto-apply to jobs on hh.ru — cover letter templates, smart skipping, human-like interaction
+// @author       mklishin
+// @license      MIT
+// @homepageURL  https://github.com/mklishin/headhunter-boost
+// @supportURL   https://github.com/mklishin/headhunter-boost/issues
+// @downloadURL  https://raw.githubusercontent.com/mklishin/headhunter-boost/main/headhunter-boost.user.js
+// @updateURL    https://raw.githubusercontent.com/mklishin/headhunter-boost/main/headhunter-boost.user.js
+// @match        *://*.hh.ru/*
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @run-at       document-end
+// @noframes
 // ==/UserScript==
-
 
 // ─── DESIGN NOTES ────────────────────────────────────────────────────────────
 //
@@ -83,7 +80,35 @@
     //          randEnabled · randMin · randMax · panelPos
 
     const config = {
-        RESUME_ID:    GM_getValue("resumeId",    ""),
+        // ── Multi-resume support ─────────────────────────────────────────────
+        // Up to 5 resumes stored as [{id, label}, ...].
+        // label is either user-typed or auto-fetched from hh.ru (requires login).
+        // Never cleared by "Clear session" — user preferences.
+        //
+        // Migration: if the old single "resumeId" key exists and "resumes" is
+        // empty, we promote the old value so existing users don't lose their ID.
+        RESUMES: (() => {
+            try {
+                const raw = GM_getValue("resumes", "");
+                if (raw) {
+                    const arr = JSON.parse(raw);
+                    if (Array.isArray(arr) && arr.length) return arr;
+                }
+            } catch { /* corrupt — fall through */ }
+            // Migration from old single-ID storage
+            const legacy = GM_getValue("resumeId", "");
+            if (legacy) return [{ id: legacy, label: "" }];
+            return [];
+        })(),
+        ACTIVE_RESUME_IDX: GM_getValue("activeResumeIdx", 0),
+
+        // Keep RESUME_ID as a computed getter so the rest of the code that
+        // reads config.RESUME_ID keeps working without changes.
+        get RESUME_ID() {
+            const r = this.RESUMES[this.ACTIVE_RESUME_IDX];
+            return r ? r.id : "";
+        },
+
         TEMPLATE_ID:  GM_getValue("templateId",  0),
         // When true, each application picks a random template from coverTemplates.
         // Requires ≥ 2 templates; UI disables the toggle when only 1 exists.
@@ -986,13 +1011,14 @@
             const yes = await showConfirm(
                 "This will permanently reset:\n\n" +
                 "• Sent application count\n" +
-                "• Complex-skipped count & list\n" +
+                "• Skipped count & list\n" +
                 "• Processed vacancy ID list\n" +
                 "• All log entries\n\n" +
                 "These are NOT reset:\n" +
-                "• Resume ID, delay, cover letter templates\n" +
+                "• Resumes (IDs + labels)\n" +
+                "• Delay, cover letter templates\n" +
                 "• Panel position\n\n" +
-                "To reset templates: open Settings and delete them.\n\nContinue?"
+                "To remove resumes or templates: open Settings.\n\nContinue?"
             );
             if (!yes) return;
 
@@ -1146,6 +1172,152 @@
         });
     };
 
+    // =========================================================================
+    // RESUME TITLE AUTO-FETCH
+    // =========================================================================
+    // hh.ru resume pages require the user to be logged in. Since this script
+    // runs on *.hh.ru and the user is already authenticated, fetch() with
+    // credentials:'include' works on the same domain — no CORS issue.
+    //
+    // We parse the <title> element from the response HTML. hh.ru titles for
+    // resume pages have the form:
+    //   "Желаемая должность — Имя Фамилия — Резюме на hh.ru"
+    // We take everything before the first " — " as the position/title.
+    //
+    // Returns the extracted label string, or "" on any failure (network error,
+    // not logged in, hh.ru changed the title format, etc.).
+    // The caller treats "" as "couldn't fetch — keep the user-typed label".
+    const fetchResumeTitle = async (id) => {
+        if (!id) return "";
+        try {
+            const res = await fetch(`https://hh.ru/resume/${id}`, {
+                credentials: "include",         // send hh.ru auth cookies
+                cache:       "no-store",        // always fresh
+            });
+            if (!res.ok) return "";             // not logged in or 404
+
+            const html = await res.text();
+
+            // Extract <title> content. hh.ru renders server-side so it's
+            // present in the raw HTML without JS execution.
+            const m = html.match(/<title[^>]*>([^<]+)<\/title>/i);
+            if (!m) return "";
+
+            // "Менеджер по продукту — Иванов Иван — Резюме на hh.ru"
+            //  → "Менеджер по продукту"
+            const raw   = m[1].replace(/&amp;/g, "&").replace(/&nbsp;/g, " ").trim();
+            const parts = raw.split(/\s+—\s+/);   // em-dash separator used by hh.ru
+            // parts[0] is the desired position; guard against unexpected format
+            return parts[0]?.trim() || raw.slice(0, 60);
+        } catch {
+            return "";  // network error, CORS, etc. — silently degrade
+        }
+    };
+
+    // =========================================================================
+    // RESUME LIST BUILDER  (used inside the Settings dialog)
+    // =========================================================================
+    // Renders editResumes[] as a list of rows:
+    //   ● radio button | resume ID input | label (editable or "Fetching…") | 🗑
+    //
+    // editResumes: working copy [{id, label}, …] (mutated in place by UI)
+    // getActive / setActive: get and set the active index (like getIdx/setIdx
+    //   pattern used for templates)
+    //
+    // Design decisions:
+    // • Radio buttons use the name "as-resume-radio" so only one can be active.
+    // • Label field is pre-populated with the stored label; if empty it shows
+    //   a placeholder. The label is NOT auto-fetched here — fetching happens
+    //   on Save, so the dialog stays snappy.
+    // • Delete is disabled when only 1 resume exists (can't have zero).
+    // • Add button is disabled when 5 resumes exist.
+    const buildResumeList = (container, editResumes, getActive, setActive) => {
+        container.innerHTML = "";
+
+        if (editResumes.length === 0) {
+            container.innerHTML =
+                '<div style="font-size:12px;color:#aaa;padding:8px 0;">No resumes added yet. Click + Add.</div>';
+            return;
+        }
+
+        editResumes.forEach((r, i) => {
+            const row = document.createElement("div");
+            row.style.cssText =
+                "display:flex;align-items:center;gap:8px;padding:7px 10px;" +
+                "border:1px solid #e0e0e0;border-radius:6px;margin-bottom:6px;" +
+                "background:" + (i === getActive() ? "#fffaf5" : "#fff") + ";";
+
+            // ── Radio ──────────────────────────────────────────────────────
+            const radio = Object.assign(document.createElement("input"), {
+                type:    "radio",
+                name:    "as-resume-radio",
+                checked: i === getActive(),
+            });
+            radio.style.cssText = "flex-shrink:0;width:15px;height:15px;cursor:pointer;accent-color:#ee7f2d;";
+            radio.addEventListener("change", () => {
+                setActive(i);
+                // Refresh row backgrounds
+                container.querySelectorAll("div[data-resume-row]").forEach((rw, j) => {
+                    rw.style.background = j === getActive() ? "#fffaf5" : "#fff";
+                });
+            });
+
+            // ── Fields container ───────────────────────────────────────────
+            const fields = document.createElement("div");
+            fields.style.cssText = "flex:1;display:flex;flex-direction:column;gap:4px;min-width:0;";
+
+            const idInp = Object.assign(document.createElement("input"), {
+                value:       r.id,
+                placeholder: "Resume ID (from hh.ru/resume/…)",
+                maxLength:   80,
+            });
+            idInp.style.cssText =
+                "width:100%;padding:5px 7px;border:1px solid #ccc;border-radius:4px;" +
+                "font-size:12px;font-family:monospace;box-sizing:border-box;";
+            idInp.addEventListener("input", () => { r.id = idInp.value.trim(); });
+
+            const labelInp = Object.assign(document.createElement("input"), {
+                value:       r.label,
+                placeholder: "Label (auto-filled on Save)",
+                maxLength:   80,
+            });
+            labelInp.style.cssText =
+                "width:100%;padding:5px 7px;border:1px solid #ddd;border-radius:4px;" +
+                "font-size:11px;color:#666;box-sizing:border-box;background:#fafafa;";
+            labelInp.addEventListener("input", () => { r.label = labelInp.value; });
+            // Store ref on row so Save can update it after fetch
+            row._labelInp = labelInp;
+
+            fields.append(idInp, labelInp);
+
+            // ── Delete ─────────────────────────────────────────────────────
+            const delBtn = document.createElement("button");
+            delBtn.textContent  = "🗑";
+            delBtn.title        = "Remove this resume";
+            delBtn.disabled     = editResumes.length <= 1;
+            delBtn.style.cssText =
+                "background:none;border:none;cursor:pointer;font-size:15px;" +
+                "color:#d9534f;padding:0;flex-shrink:0;line-height:1;" +
+                (editResumes.length <= 1 ? "opacity:.3;" : "");
+            delBtn.addEventListener("click", () => {
+                editResumes.splice(i, 1);
+                if (getActive() >= editResumes.length) setActive(Math.max(0, editResumes.length - 1));
+                buildResumeList(container, editResumes, getActive, setActive);
+                // Refresh add-button state
+                const dlg = container.closest("#as-settings-dlg");
+                const addBtn = dlg?.querySelector("#as-add-resume");
+                if (addBtn) {
+                    addBtn.disabled      = editResumes.length >= 5;
+                    addBtn.style.opacity = editResumes.length >= 5 ? "0.4" : "1";
+                }
+            });
+
+            row.setAttribute("data-resume-row", i);
+            row.append(radio, fields, delBtn);
+            container.appendChild(row);
+        });
+    };
+
     const showSettings = () => {
         const overlay = document.createElement("div");
         overlay.style.cssText =
@@ -1167,17 +1339,28 @@
         const bodyEl = document.createElement("div");
         bodyEl.style.cssText = "padding:16px 24px;overflow-y:auto;flex:1;";
         bodyEl.innerHTML = `
-            <label style="font-size:13px;font-weight:bold;">Resume ID</label>
-            <div style="font-size:11px;color:#888;margin:3px 0 6px;">
-                Copy the long ID from your resume URL on hh.ru:<br>
+            <!-- ── Resumes ──────────────────────────────────────────────────── -->
+            <div style="display:flex;justify-content:space-between;align-items:center;
+                margin-bottom:4px;">
+                <label style="font-size:13px;font-weight:bold;">Resumes</label>
+                <button id="as-add-resume"
+                    style="padding:3px 10px;background:#ee7f2d;color:white;border:none;
+                    border-radius:4px;cursor:pointer;font-size:12px;font-weight:bold;">
+                    + Add
+                </button>
+            </div>
+            <div style="font-size:11px;color:#888;margin-bottom:8px;line-height:1.5;">
+                Up to 5 resumes. Select the active one with the radio button.<br>
+                ID = the long code in your resume URL:
                 <span style="font-family:monospace;color:#555;">
-                    hh.ru/resume/<b>l033t74oj0cg84bde0839yd1f614270706634</b>
+                    hh.ru/resume/<b>ab12cd34ef56…</b>
+                </span><br>
+                Label is fetched automatically from hh.ru when you save (requires login).
+                <span style="color:#c0392b;font-weight:bold;">
+                    ⚠ Resumes survive "Clear session".
                 </span>
             </div>
-            <input id="as-resume-inp" value="${escHtml(config.RESUME_ID)}"
-                placeholder="Paste your resume ID here"
-                style="width:100%;padding:8px;margin-bottom:16px;border:1px solid #ccc;
-                border-radius:6px;box-sizing:border-box;font-size:13px;">
+            <div id="as-resume-list" style="margin-bottom:16px;"></div>
 
             <label style="font-size:13px;font-weight:bold;">Delay between responses (ms)</label>
             <div style="font-size:11px;color:#888;margin:3px 0 6px;">
@@ -1305,6 +1488,33 @@
         buildTemplateList(tmplList, editTpls, getIdx, setIdx);
         rebuildActiveSelector(activeSel, editTpls, getIdx, setIdx);
 
+        // ── Resume list ──────────────────────────────────────────────────────
+        // Working copy: shallow-copy objects so Cancel truly discards changes.
+        const editResumes = config.RESUMES.map(r => ({ ...r }));
+        let   editActiveIdx = Math.min(config.ACTIVE_RESUME_IDX, Math.max(0, editResumes.length - 1));
+        const getActive = () => editActiveIdx;
+        const setActive = v  => { editActiveIdx = v; };
+
+        const resumeListEl = dialog.querySelector("#as-resume-list");
+        buildResumeList(resumeListEl, editResumes, getActive, setActive);
+
+        const addResumeBtn = dialog.querySelector("#as-add-resume");
+        const refreshAddResumeBtn = () => {
+            addResumeBtn.disabled      = editResumes.length >= 5;
+            addResumeBtn.style.opacity = editResumes.length >= 5 ? "0.4" : "1";
+        };
+        refreshAddResumeBtn();
+
+        addResumeBtn.addEventListener("click", () => {
+            if (editResumes.length >= 5) return;
+            editResumes.push({ id: "", label: "" });
+            buildResumeList(resumeListEl, editResumes, getActive, setActive);
+            refreshAddResumeBtn();
+            // Focus the new ID input so the user can paste immediately
+            const inputs = resumeListEl.querySelectorAll("input[placeholder*='Resume ID']");
+            inputs[inputs.length - 1]?.focus();
+        });
+
         // ── Random template toggle interactivity ────────────────────────────
         // Checkbox is disabled (and shows a hint) when fewer than 2 templates
         // exist. When checked it greys out the "Active:" selector because the
@@ -1373,14 +1583,57 @@
             if (all.length) all[all.length - 1].open = true;
         });
 
-        dialog.querySelector("#as-save-set").onclick = () => {
-            config.RESUME_ID  = dialog.querySelector("#as-resume-inp").value.trim();
-            config.DELAY_MS   = Math.max(
+        dialog.querySelector("#as-save-set").onclick = async () => {
+            // ── Validate resumes ────────────────────────────────────────────
+            const validResumes = editResumes.filter(r => r.id.trim());
+            if (validResumes.length === 0) {
+                // Show inline error in the resume section
+                let errEl = dialog.querySelector("#as-resume-err");
+                if (!errEl) {
+                    errEl = document.createElement("div");
+                    errEl.id = "as-resume-err";
+                    errEl.style.cssText = "font-size:11px;color:#d9534f;margin-bottom:8px;";
+                    resumeListEl.after(errEl);
+                }
+                errEl.textContent = "Add at least one resume ID before saving.";
+                return;
+            }
+            // Clamp active index to valid range after filtering
+            const finalActiveIdx = Math.min(
+                editActiveIdx,
+                validResumes.length - 1
+            );
+
+            // Disable save button to prevent double-submit during async fetch
+            const saveBtn = dialog.querySelector("#as-save-set");
+            saveBtn.disabled    = true;
+            saveBtn.textContent = "Saving…";
+
+            // ── Auto-fetch missing labels ───────────────────────────────────
+            // For every resume whose label is empty, try to fetch the title
+            // from hh.ru in parallel. The fetch is best-effort: failures are
+            // silently ignored and the label stays empty (user can type it).
+            // We do this here (on Save) rather than on every keystroke to keep
+            // the dialog snappy.
+            await Promise.all(
+                validResumes.map(async (r, i) => {
+                    if (r.label.trim()) return; // already has a label
+                    const fetched = await fetchResumeTitle(r.id.trim());
+                    if (fetched) {
+                        r.label = fetched;
+                        // Update the label input in the DOM so the user sees it
+                        const rows = resumeListEl.querySelectorAll("div[data-resume-row]");
+                        if (rows[i]?._labelInp) rows[i]._labelInp.value = fetched;
+                    }
+                })
+            );
+
+            // ── Save all other settings ─────────────────────────────────────
+            config.DELAY_MS = Math.max(
                 1500,
                 parseInt(dialog.querySelector("#as-delay-inp").value) || 3000
             );
 
-            // ── Validate randomization inputs before saving ─────────────────
             const randEnabled = dialog.querySelector("#as-rand-chk").checked;
             if (randEnabled) {
                 const rMin = parseInt(dialog.querySelector("#as-rand-min").value) || 0;
@@ -1388,51 +1641,61 @@
                 const errEl = dialog.querySelector("#as-rand-err");
 
                 if (rMin < 100) {
-                    errEl.textContent  = "Min delay must be at least 100 ms.";
+                    errEl.textContent   = "Min delay must be at least 100 ms.";
                     errEl.style.display = "block";
-                    return; // block save
+                    saveBtn.disabled    = false;
+                    saveBtn.textContent = "Save";
+                    return;
                 }
                 if (rMax <= rMin) {
-                    errEl.textContent  = "Max delay must be greater than min delay.";
+                    errEl.textContent   = "Max delay must be greater than min delay.";
                     errEl.style.display = "block";
+                    saveBtn.disabled    = false;
+                    saveBtn.textContent = "Save";
                     return;
                 }
 
                 config.RAND_ENABLED = true;
                 config.RAND_MIN     = rMin;
                 config.RAND_MAX     = rMax;
-                // Set current delay to a fresh sample so it takes effect immediately
                 config.DELAY_MS     = sampleDelay();
-                // Reset rotation counter so first rotation happens at correct cadence
                 _responsesSinceRotation = 0;
                 _nextRotateAt           = _randInt(4, 7);
             } else {
                 config.RAND_ENABLED = false;
             }
 
-            // Strip empty templates; fall back to defaults if all deleted.
             const finalTpls    = editTpls.map(t => t.trim()).filter(Boolean);
             coverTemplates     = finalTpls.length ? finalTpls : [...DEFAULT_TEMPLATES];
             config.TEMPLATE_ID = Math.min(editIdx, coverTemplates.length - 1);
 
-            // Random template selection — only valid when ≥ 2 templates exist.
             const tmplRandWanted = dialog.querySelector("#as-tmpl-rand-chk").checked;
             config.TMPL_RANDOM   = tmplRandWanted && coverTemplates.length >= 2;
 
-            GM_setValue("resumeId",     config.RESUME_ID);
-            GM_setValue("delayMs",      config.DELAY_MS);
-            GM_setValue("templateId",   config.TEMPLATE_ID);
-            GM_setValue("userTemplates",JSON.stringify(coverTemplates));
-            GM_setValue("randEnabled",  config.RAND_ENABLED);
-            GM_setValue("randMin",      config.RAND_MIN);
-            GM_setValue("randMax",      config.RAND_MAX);
-            GM_setValue("tmplRandom",   config.TMPL_RANDOM);
+            // ── Persist ─────────────────────────────────────────────────────
+            // Resumes and activeResumeIdx are config (not session) — never
+            // cleared by "Clear session".
+            config.RESUMES           = validResumes;
+            config.ACTIVE_RESUME_IDX = finalActiveIdx;
+
+            GM_setValue("resumes",         JSON.stringify(validResumes));
+            GM_setValue("activeResumeIdx", finalActiveIdx);
+            GM_setValue("delayMs",         config.DELAY_MS);
+            GM_setValue("templateId",      config.TEMPLATE_ID);
+            GM_setValue("userTemplates",   JSON.stringify(coverTemplates));
+            GM_setValue("randEnabled",     config.RAND_ENABLED);
+            GM_setValue("randMin",         config.RAND_MIN);
+            GM_setValue("randMax",         config.RAND_MAX);
+            GM_setValue("tmplRandom",      config.TMPL_RANDOM);
 
             overlay.remove(); dialog.remove();
-            const randNote  = config.RAND_ENABLED
+
+            const activeResume = validResumes[finalActiveIdx];
+            const randNote     = config.RAND_ENABLED
                 ? `  rand:[${config.RAND_MIN}–${config.RAND_MAX}ms]` : "";
-            const tmplNote  = config.TMPL_RANDOM ? "  tmpl:random" : `  tmpl:${config.TEMPLATE_ID + 1}`;
-            log(`✅ Settings saved — delay:${config.DELAY_MS}ms${randNote}  templates:${coverTemplates.length}${tmplNote}`);
+            const tmplNote     = config.TMPL_RANDOM
+                ? "  tmpl:random" : `  tmpl:${config.TEMPLATE_ID + 1}`;
+            log(`✅ Settings saved — resume:"${activeResume.label || activeResume.id.slice(0,12)}"  delay:${config.DELAY_MS}ms${randNote}  templates:${coverTemplates.length}${tmplNote}`);
         };
 
         const closeDialog = () => { overlay.remove(); dialog.remove(); };
