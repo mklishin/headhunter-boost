@@ -19,38 +19,12 @@
 // @noframes
 // ==/UserScript==
 
-// ─── DESIGN NOTES ────────────────────────────────────────────────────────────
-//
-//  GM_openInTab is intentionally absent.
-//    Background tabs also match *://*.hh.ru/* and run this script. Their
-//    GM_setValue calls race with the main tab and corrupt isRunning → false,
-//    breaking auto-resume. Complex jobs are logged and skipped instead.
-//
-//  Complexity detection: post-click URL poll only.
-//    Pre-click heuristics (keywords, data-qa checks) caused false positives on
-//    simple jobs and were removed. The only signal is: did location.href change?
-//
-//  SPA back-navigation:
-//    hh.ru is a React SPA. Complex job navigation typically uses pushState.
-//    history.back() returns to the search page with JS context intact — no
-//    full reload needed. window.location.href is a hard fallback only.
-//
-//  Vacancy ID extraction:
-//    data-vacancy-id does not exist on hh.ru cards (confirmed May 2025).
-//    IDs come from [data-qa="serp-item__title"] href, and from the redirect
-//    URL's vacancyId query param (always present, DOM-structure-independent).
-//
-// ─────────────────────────────────────────────────────────────────────────────
-
 (() => {
     'use strict';
 
     const VERSION = "6.1";
     const BRAND   = "HeadHunter Boost";
 
-    // =========================================================================
-    // DEFAULT COVER TEMPLATES
-    // =========================================================================
     // Shown in Settings. User can edit, add (up to 5), or delete.
     // Persisted under GM key "userTemplates". Cleared only by deleting in Settings.
     // {JOB_TITLE} is replaced with the vacancy title at send time.
@@ -73,9 +47,6 @@
         return [...DEFAULT_TEMPLATES];
     })();
 
-    // =========================================================================
-    // CONFIG  (user preferences — never cleared by "Clear session")
-    // =========================================================================
     // GM keys: resumeId · templateId · tmplRandom · delayMs · userTemplates ·
     //          randEnabled · randMin · randMax · panelPos
 
@@ -129,9 +100,6 @@
     // Clamp saved templateId in case templates were deleted since last run.
     if (config.TEMPLATE_ID >= coverTemplates.length) config.TEMPLATE_ID = 0;
 
-    // =========================================================================
-    // SESSION STATE  (cleared by "Clear session")
-    // =========================================================================
     // GM keys: isRunning · successCount · complexCount · originalSearchUrl ·
     //          processedIds · complexJobs
     //
@@ -152,48 +120,43 @@
         catch { return []; }
     })();
 
-    // Write all session keys in one block. GM_setValue is synchronous in
-    // Tampermonkey so this is safe immediately before window.location.href.
+    // dbg(): console-only verbose trace. Never shown in the panel log.
+    // Use for per-step timing, interaction method, DOM probe results — anything
+    // useful when you open DevTools but would clutter the live log for users.
+    const dbg = (...args) => console.debug(`[${BRAND}]`, ...args);
+
+    // ── Guarded persistState ─────────────────────────────────────────────────
+    // Each GM_setValue is wrapped separately so a partial failure is visible.
+    // In practice Tampermonkey's GM_setValue never throws, but a corrupted
+    // storage quota or sandbox issue would otherwise silently drop state.
     const persistState = () => {
-        GM_setValue("isRunning",         isRunning);
-        GM_setValue("successCount",      successCount);
-        GM_setValue("complexCount",      complexCount);
-        GM_setValue("originalSearchUrl", originalSearchUrl);
-        GM_setValue("processedIds",      JSON.stringify([...processedIds]));
-        // complexJobs is written separately by pushComplexJob() so we don't
-        // serialise the full array on every routine persistState() call.
+        const write = (key, val) => {
+            try { GM_setValue(key, val); }
+            catch (e) { log(`❌ GM_setValue("${key}") failed: ${e.message}`); }
+        };
+        write("isRunning",          isRunning);
+        write("successCount",       successCount);
+        write("complexCount",       complexCount);
+        write("originalSearchUrl",  originalSearchUrl);
+        write("processedIds",       JSON.stringify([...processedIds]));
     };
 
-    // Reset session state and in-memory log. Does NOT touch config or panel position.
     const clearSession = () => {
-        isRunning         = false;
-        successCount      = 0;
-        complexCount      = 0;
-        originalSearchUrl = "";
-        processedIds      = new Set();
-        complexJobs       = [];
-        logLines          = [];        // cleared in-memory; no GM key for logs
+        isRunning = false; successCount = 0; complexCount = 0;
+        originalSearchUrl = ""; processedIds = new Set();
+        complexJobs = []; logLines = [];
         persistState();
-        GM_setValue("complexJobs", "[]");
+        try { GM_setValue("complexJobs", "[]"); }
+        catch (e) { log(`❌ GM_setValue("complexJobs") failed: ${e.message}`); }
     };
 
-    // =========================================================================
-    // CONCURRENCY GUARD
-    // =========================================================================
     // hh.ru is a React SPA. DOM mutations can re-trigger init() →
     // maybeAutoResume() → startProcessing() while a loop is already running.
     // This flag prevents a second concurrent loop from starting.
     let isProcessingActive = false;
 
-    // =========================================================================
-    // HELPERS
-    // =========================================================================
-
     const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-    // =========================================================================
-    // RANDOMIZED DELAY  (Box-Muller Gaussian)
-    // =========================================================================
     // Samples a value in [min, max] using a Gaussian distribution centred at
     // the midpoint with σ ≈ (max-min)/6, then clamped to the range.
     // Gaussian makes the pattern less mechanical than uniform random: most
@@ -205,17 +168,9 @@
     let _responsesSinceRotation = 0;
     let _nextRotateAt           = _randInt(4, 7); // rotate after this many sends
 
-    // Returns a random integer in [lo, hi] inclusive.
     function _randInt(lo, hi) { return lo + Math.floor(Math.random() * (hi - lo + 1)); }
 
-    // Returns a random ms value in [lo, hi] for micro-timing jitter.
-    // Uniform distribution is intentional here: sub-200ms pauses don't need
-    // Gaussian clustering — any value in range is equally "human-like".
-    const _jitterMs = (lo, hi) => _randInt(lo, hi);
 
-    // =========================================================================
-    // HUMAN-LIKE INTERACTION
-    // =========================================================================
     // Replaces bare el.click() at the two interaction points (response button
     // and submit button). Randomly varies the input method so automated
     // sequences don't produce a uniform stream of programmatic click events.
@@ -243,9 +198,8 @@
     // IMPORTANT: The outcome (element activation) must be identical across all
     // paths — this function never changes *what* gets activated, only *how*.
 
-    // Dispatches a synthetic key event triad on `el`.
-    // All three phases (down/press/up) are required — omitting keypress is a
-    // documented anti-bot detection heuristic used by some JS fingerprinters.
+    // Dispatches the full keydown/keypress/keyup triad. Omitting keypress is a
+    // known anti-bot fingerprint so all three phases are always fired.
     const _key = (el, key, code, extra = {}) => {
         const opts = { key, code, bubbles: true, cancelable: true, ...extra };
         el.dispatchEvent(new KeyboardEvent("keydown",  opts));
@@ -254,45 +208,19 @@
     };
 
     const humanInteract = async (el) => {
-        const roll = Math.random();
-
-        if (roll < 0.55) {
-            // ── 55 % — direct click ──────────────────────────────────────────
-            el.click();
-
-        } else if (roll < 0.90) {
-            // ── 35 % — focus + Enter ─────────────────────────────────────────
-            // Real keyboard users focus a button first, then press Enter.
-            el.focus();
-            await sleep(_jitterMs(25, 75));
-            _key(el, "Enter", "Enter");
-
-        } else if (roll < 0.95) {
-            // ── 5 % — Tab from prior focus → Enter ───────────────────────────
-            // Fire Tab on whatever was last focused so the browser event log
-            // shows a proper focus-transfer, not just an isolated Enter.
-            const prev = document.activeElement;
-            if (prev && prev !== document.body) {
-                _key(prev, "Tab", "Tab");
+        try {
+            if (Math.random() < 0.60) {
+                dbg("interact: click()");
+                el.click();
+            } else {
+                dbg("interact: focus+Enter");
+                el.focus();
+                await sleep(_randInt(25, 75));
+                _key(el, "Enter", "Enter");
             }
-            await sleep(_jitterMs(35, 85));
-            el.focus();
-            await sleep(_jitterMs(20, 60));
-            _key(el, "Enter", "Enter");
-
-        } else {
-            // ── 5 % — Shift+Tab backward then Tab forward → Enter ────────────
-            // Mimics a user who overshot the target by one element and corrected.
-            const prev = document.activeElement;
-            if (prev && prev !== document.body) {
-                _key(prev, "Tab", "Tab", { shiftKey: true }); // go back
-                await sleep(_jitterMs(40, 90));
-                _key(prev, "Tab", "Tab");                     // then forward
-            }
-            await sleep(_jitterMs(30, 70));
-            el.focus();
-            await sleep(_jitterMs(20, 55));
-            _key(el, "Enter", "Enter");
+        } catch (e) {
+            log(`⚠️ humanInteract error: ${e.message} — fallback click()`);
+            try { el.click(); } catch { /* element gone */ }
         }
     };
 
@@ -326,9 +254,6 @@
         GM_setValue("delayMs", newDelay); // persist so resumed sessions keep it
     };
 
-    // =========================================================================
-    // DAILY LIMIT DETECTION
-    // =========================================================================
     // hh.ru displays this exact text when the 200-reply daily cap is hit.
     // We scan document.body.innerText after each submit; on match we stop the
     // loop, beep, and show an alert popup.
@@ -409,9 +334,6 @@
         overlay.addEventListener("click", e => { if (e.target === overlay) overlay.remove(); });
     };
 
-    // =========================================================================
-    // LOGGING
-    // =========================================================================
     // Each entry: { unix: number, time: string, msg: string }
     // logLines is newest-first (unshift) so the panel renders newest at top.
     //
@@ -423,59 +345,43 @@
     // renderLog() is also skipped entirely when the log panel is hidden.
 
     const MAX_LOG_LINES = 120;
-    let logLines        = [];
-    let renderPending   = false;
+    let logLines       = [];
+    let _renderPending = false;
 
     const log = (msg) => {
-        const now  = Date.now();
-        const time = new Date(now).toLocaleTimeString();
-        console.log(`[${BRAND} ${time}] ${msg}`);
-        logLines.unshift({ unix: now, time, msg });
+        const u = Date.now(), t = new Date(u).toLocaleTimeString();
+        console.log(`[${BRAND}] ${msg}`);
+        logLines.unshift({ t, u, m: msg });
         if (logLines.length > MAX_LOG_LINES) logLines.pop();
-        scheduleRender();
-    };
-
-    const scheduleRender = () => {
-        if (renderPending) return;
-        renderPending = true;
-        requestAnimationFrame(() => { renderPending = false; renderLog(); });
+        if (!_renderPending) {
+            _renderPending = true;
+            requestAnimationFrame(() => { _renderPending = false; renderLog(); });
+        }
     };
 
     const renderLog = () => {
         const el = elCache.log;
-        // Skip rebuild when panel not created yet or log is collapsed.
         if (!el || el.style.display === "none") return;
         el.innerHTML = logLines
-            .map(l => `<span style="color:#5b9bd5">[${l.time}]</span> ${escHtml(l.msg)}`)
+            .map(l => `<span style="color:#5b9bd5">[${l.t}]</span> ${escHtml(l.m)}`)
             .join("<br>");
-        el.scrollTop = 0; // keep newest entry at top
+        el.scrollTop = 0;
     };
 
-    const escHtml = s =>
-        s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const escHtml = s => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
-    // Copy uses the full format (time + unix + msg) for easy grep / diff.
-    // navigator.clipboard is always available in Tampermonkey context;
-    // document.execCommand("copy") is deprecated and intentionally removed.
-    const copyLog = () => {
-        const text = logLines.map(l => `[${l.time}] [unix:${l.unix}] ${l.msg}`).join("\n");
-        navigator.clipboard.writeText(text)
-            .then(() => log("📋 Log copied to clipboard"))
-            .catch(err => log(`⚠️ Copy failed: ${err.message}`));
-    };
+    const copyLog = () =>
+        navigator.clipboard.writeText(
+            logLines.map(l => `[${l.t}] [unix:${l.u}] ${l.m}`).join("\n")
+        ).then(() => log("📋 Log copied")).catch(() => log("⚠️ Copy failed"));
 
-    // Single structured log entry for each sent application.
-    // Logged as one msg so it occupies one line in the panel rather than 6.
-    // The copy output will contain the full detail on a single line.
-    const logApplication = (vacancyId, title, coverLetter) => {
-        const preview = coverLetter.replace(/\n/g, " ").slice(0, 80);
-        log(`📨 SENT  id:${vacancyId ?? "?"}  "${title}"  cover:"${preview}…"`);
-    };
+    const logApplication = (id, title, cover) =>
+        log(`📨 ОТКЛИК  id:${id ?? "?"}  "${title}"  — ${
+            cover === "(no cover)"
+                ? "🚫 без письма"
+                : `✉️ с письмом: "${cover.replace(/\n/g, " ").slice(0, 60)}…"`
+        }`);
 
-    // =========================================================================
-    // CACHED DOM REFS
-    // =========================================================================
-    // Populated once in createPanel(). Avoids repeated getElementById in
     // hot paths (updateCounters, renderLog, toggleSending, maybeAutoResume).
 
     const elCache = {
@@ -486,17 +392,14 @@
         totalEl:   null,
     };
 
-    // Update all three counter spans in one call.
     const updateCounters = () => {
         if (elCache.sentEl)    elCache.sentEl.textContent    = successCount;
         if (elCache.complexEl) elCache.complexEl.textContent = complexCount;
-        // "Seen" = total unique IDs processed (applied + complex + already-applied).
         if (elCache.totalEl)   elCache.totalEl.textContent   = processedIds.size;
+        // Keep the mini-status label current when the panel is collapsed
+        if (elCache._refreshMini) elCache._refreshMini();
     };
 
-    // =========================================================================
-    // TAB ACTIVITY INDICATOR
-    // =========================================================================
     // Title flash + favicon orange dot so the user can identify the active tab.
     // Both pulse at 1.2 s for a unified rhythm. Stopped cleanly on pause/error.
 
@@ -561,9 +464,191 @@
         }
     };
 
-    // =========================================================================
-    // VACANCY DATA EXTRACTION
-    // =========================================================================
+    // When the script is running and the tab loses focus (user switches away or
+    // the window is blurred), an overlay warning appears on top of the page so
+    // it is the first thing the user sees when they return.
+    //
+    // Why not beforeunload: that event would also fire on our own
+    // window.location.href = originalSearchUrl back-navigation, showing the
+    // browser's native "Leave site?" prompt and breaking the auto-resume cycle.
+    //
+    // The overlay is pure informational — it cannot prevent a tab switch but
+    // clearly signals the risk of leaving.
+
+    const _showFocusWarning = () => {
+        if (!isRunning) return;
+        if (document.getElementById("as-focus-warn")) return; // already visible
+
+        const overlay = document.createElement("div");
+        overlay.id = "as-focus-warn";
+        overlay.style.cssText =
+            "position:fixed;inset:0;background:rgba(0,0,0,.78);z-index:2147483647;" +
+            "display:flex;align-items:center;justify-content:center;";
+
+        const box = document.createElement("div");
+        box.style.cssText =
+            "background:#fff;border-radius:14px;padding:36px 40px;max-width:420px;" +
+            "text-align:center;font-family:system-ui;box-shadow:0 24px 60px rgba(0,0,0,.45);";
+        box.innerHTML = `
+            <div style="font-size:52px;margin-bottom:14px;">⚠️</div>
+            <h2 style="margin:0 0 12px;font-size:20px;color:#c0392b;">Скрипт работает!</h2>
+            <p style="margin:0 0 18px;font-size:15px;color:#444;line-height:1.65;">
+                HeadHunter Boost отправляет отклики в этой вкладке.<br>
+                Если убрать фокус с вкладки — скрипт прервётся.
+            </p>
+            <p style="margin:0 0 26px;font-size:13px;color:#999;">
+                Откройте другие задачи в соседнем окне, а не в другой вкладке браузера.
+            </p>
+            <button id="as-focus-ok"
+                style="padding:12px 36px;background:#ee7f2d;color:#fff;border:none;
+                border-radius:8px;cursor:pointer;font-size:15px;font-weight:bold;
+                box-shadow:0 4px 12px rgba(238,127,45,.4);">
+                Понятно, остаюсь здесь
+            </button>`;
+
+        overlay.appendChild(box);
+        document.body.appendChild(overlay);
+
+        const dismiss = () => overlay.remove();
+        box.querySelector("#as-focus-ok").onclick = dismiss;
+        // Also dismiss when the user switches back and the tab becomes visible
+        const onVisible = () => {
+            if (!document.hidden) { dismiss(); document.removeEventListener("visibilitychange", onVisible); }
+        };
+        document.addEventListener("visibilitychange", onVisible);
+    };
+
+    const setupFocusGuard = () => {
+        // visibilitychange covers tab switching in most browsers
+        document.addEventListener("visibilitychange", () => {
+            if (document.hidden) _showFocusWarning();
+        });
+        // blur covers: switching to another app, clicking outside the browser
+        window.addEventListener("blur", _showFocusWarning);
+        // Dismiss when focus returns
+        window.addEventListener("focus", () => {
+            document.getElementById("as-focus-warn")?.remove();
+        });
+    };
+
+    // Visually marks vacancy cards on the search page that have already been
+    // processed (applied or skipped). Updated after each vacancy is handled
+    // and on page load.
+    //
+    // Distinguishes two states:
+    //   applied — green tint + "✓ Отклик" badge
+    //   skipped — grey tint + "⏩ Пропущено" badge
+    //
+    // Applied vs skipped is determined by cross-referencing processedIds with
+    // complexJobs (skipped vacancies are stored there). No extra storage key.
+    //
+    // Lazy-load support: a MutationObserver watches the search results container
+    // and re-runs applyVisitedStyles() when hh.ru appends new cards on scroll.
+
+    const _injectVisitedCSS = () => {
+        if (document.getElementById("as-visited-css")) return;
+        const s = document.createElement("style");
+        s.id = "as-visited-css";
+        s.textContent = `
+            /*
+             * HeadHunter Boost — visited vacancy highlighting.
+             * inset box-shadow is used as the primary visual signal instead of
+             * background-color because hh.ru's magritte class selectors often
+             * win the specificity battle even against [attr] selectors with
+             * !important. box-shadow is an additive property that doesn't
+             * conflict with hh.ru's own shadows.
+             */
+
+            /* Applied — green left accent bar */
+            [data-qa="vacancy-serp__vacancy"][data-hhb="applied"] {
+                box-shadow: inset 3px 0 0 #27ae60 !important;
+                opacity: 0.82 !important;
+                transition: opacity .25s !important;
+            }
+
+            /* Skipped — grey left accent bar */
+            [data-qa="vacancy-serp__vacancy"][data-hhb="skipped"] {
+                box-shadow: inset 3px 0 0 #adb5bd !important;
+                opacity: 0.70 !important;
+                transition: opacity .25s !important;
+            }
+
+            /* position:relative is required for the absolute badge */
+            [data-qa="vacancy-serp__vacancy"][data-hhb] {
+                position: relative !important;
+            }
+
+            /* Badge shared base */
+            .as-visited-badge {
+                position: absolute;
+                top: 8px;
+                right: 10px;
+                font-size: 10px;
+                font-weight: 700;
+                padding: 2px 7px;
+                border-radius: 20px;
+                font-family: system-ui, sans-serif;
+                pointer-events: none;
+                z-index: 50;
+                letter-spacing: .15px;
+                line-height: 1.6;
+                white-space: nowrap;
+            }
+            .as-visited-badge.applied {
+                background: rgba(39, 174, 96, 0.15);
+                color: #1a6b3c;
+                border: 1px solid rgba(39, 174, 96, 0.35);
+            }
+            .as-visited-badge.skipped {
+                background: rgba(108, 117, 125, 0.12);
+                color: #555;
+                border: 1px solid rgba(108, 117, 125, 0.28);
+            }
+        `;
+        document.head.appendChild(s);
+    };
+
+    let _visitedPending = false;
+    const applyVisitedStyles = () => {
+        if (_visitedPending || processedIds.size === 0) return;
+        _visitedPending = true;
+        requestAnimationFrame(() => {
+            _visitedPending = false;
+            const skipped = new Set(complexJobs.map(j => j.id).filter(Boolean));
+            let tagged = 0;
+            document.querySelectorAll('[data-qa="vacancy-serp__vacancy"]').forEach(card => {
+                const m = card.querySelector('[data-qa="serp-item__title"]')?.href?.match(/\/vacancy\/(\d+)/);
+                if (!m) return;
+                const vid = m[1];
+                if (!processedIds.has(vid)) return;
+                const status = skipped.has(vid) ? "skipped" : "applied";
+                if (card.dataset.hhb === status) return;
+                card.dataset.hhb = status;
+                card.querySelector(".as-visited-badge")?.remove();
+                const badge = document.createElement("div");
+                badge.className   = `as-visited-badge ${status}`;
+                badge.textContent = status === "applied" ? "✓ Отклик" : "⏩ Пропущено";
+                card.appendChild(badge);
+                tagged++;
+            });
+            if (tagged > 0) log(`🎨 Marked ${tagged} card(s) as visited`);
+        });
+    };
+
+    let _visitedObserver = null;
+    const setupVisitedObserver = () => {
+        if (_visitedObserver) return;
+        const target =
+            document.querySelector('[data-qa="vacancy-serp-list"]') ||
+            document.querySelector('[class*="vacancy-serp"]') ||
+            document.body;
+        // childList:true subtree:false — only fires when direct children change
+        // (new card rows appended on scroll). subtree:true would fire on every
+        // attribute/text mutation inside all cards, which is very expensive.
+        _visitedObserver = new MutationObserver(applyVisitedStyles);
+        _visitedObserver.observe(target, { childList: true, subtree: false });
+    };
+
     // Selectors confirmed from live hh.ru HTML (May 2025):
     //   Card root : [data-qa="vacancy-serp__vacancy"]
     //   Title link: [data-qa="serp-item__title"]      href="/vacancy/<ID>?…"
@@ -574,48 +659,61 @@
     // null means we cannot deduplicate this button — the redirect-URL fallback
     // (getVacancyIdFromUrl) is the safety net for the endless-loop prevention.
     const getVacancyIdFromBtn = (btn) => {
-        // Strategy 1 (primary): confirmed card root + title anchor
         const card = btn.closest('[data-qa="vacancy-serp__vacancy"]');
         if (card) {
             const m  = card.querySelector('[data-qa="serp-item__title"]')
                           ?.href?.match(/\/vacancy\/(\d+)/);
             if (m) return m[1];
-            // Broader fallback within the same confirmed card root
             const m2 = card.querySelector('a[href*="/vacancy/"]')
                            ?.href?.match(/\/vacancy\/(\d+)/);
             if (m2) return m2[1];
         }
-        // Strategy 2: common structural wrappers (hh.ru A/B variants)
         for (const wrap of [btn.closest("article"), btn.closest("li")]) {
             const m = wrap?.querySelector('a[href*="/vacancy/"]')
                          ?.href?.match(/\/vacancy\/(\d+)/);
             if (m) return m[1];
         }
-        // Strategy 3: button itself is an anchor
         const m3 = (btn.getAttribute("href") || btn.getAttribute("data-url") || "")
                    .match(/\/vacancy\/(\d+)/);
-        return m3 ? m3[1] : null;
+        if (m3) return m3[1];
+
+        // All strategies failed — log enough context to update selectors
+        log(`⚠️ getVacancyIdFromBtn: ID not found`);
+        log(`   data-qa="${btn.getAttribute("data-qa")}" ` +
+            `href="${btn.getAttribute("href")?.slice(0, 60) ?? "none"}"`);
+        log(`   card found: ${!!card}  ` +
+            `title-link: ${!!card?.querySelector('[data-qa="serp-item__title"]')}`);
+        return null;
     };
 
-    // MUST be called BEFORE btn.click().
-    // After the modal opens, document.querySelector("h1") on the search page
-    // returns the results count "Найдено N вакансий", not the vacancy title.
     const getJobTitleFromCard = (btn) => {
         const card = btn.closest('[data-qa="vacancy-serp__vacancy"]');
-        if (!card) return null;
-        return (
+        if (!card) {
+            log(`⚠️ getJobTitleFromCard: no card root found — selector may have changed`);
+            return null;
+        }
+        const title =
             card.querySelector('[data-qa="serp-item__title-text"]')?.innerText?.trim() ||
             card.querySelector('[data-qa="serp-item__title"]')?.innerText?.trim() ||
-            null
-        );
+            null;
+        if (!title) {
+            log(`⚠️ getJobTitleFromCard: title selectors returned nothing`);
+            log(`   selectors present: title-text=${
+                !!card.querySelector('[data-qa="serp-item__title-text"]')
+            } title=${!!card.querySelector('[data-qa="serp-item__title"]')}`);
+        }
+        return title;
     };
 
-    // Extracts vacancyId from the complex-job redirect URL query string.
-    // URL format: https://hh.ru/applicant/vacancy_response?vacancyId=133135055&…
-    // Always present in complex-job URLs; does not depend on DOM structure.
     const getVacancyIdFromUrl = (url) => {
-        try { return new URL(url).searchParams.get("vacancyId"); }
-        catch { return null; }
+        try {
+            const id = new URL(url).searchParams.get("vacancyId");
+            if (!id) dbg(`getVacancyIdFromUrl: no vacancyId param in "${url.slice(0,80)}"`);
+            return id;
+        } catch (e) {
+            log(`⚠️ getVacancyIdFromUrl parse error: ${e.message} (url: "${url?.slice(0,60)}")`);
+            return null;
+        }
     };
 
     // Add IDs to processedIds. Null values are silently ignored.
@@ -628,9 +726,6 @@
         if (changed) updateCounters();
     };
 
-    // =========================================================================
-    // COMPLEX JOBS LIST
-    // =========================================================================
     // Each entry: { id, title, url, time }
     // Stored in GM under "complexJobs"; shown in popup on ⏩ counter click.
     // Capped at 200 entries (oldest dropped). Deduplicated by ID.
@@ -751,9 +846,6 @@
         };
     };
 
-    // =========================================================================
-    // NAVIGATION DETECTION
-    // =========================================================================
     // Polls location.href every 80 ms (reduced from 150 ms) for up to waitMs.
     // Returns true if the URL changed (= complex job navigated the page away).
     // This is the ONLY complexity signal — zero pre-click heuristics.
@@ -775,15 +867,15 @@
             const deadline = Date.now() + waitMs;
             const poll = () => {
                 if (!location.pathname.includes("/vacancy_response")) return resolve(true);
-                if (Date.now() > deadline) return resolve(false);
+                if (Date.now() > deadline) {
+                    log(`⚠️ waitForBackNav: timed out after ${waitMs}ms — still on "${location.pathname}"`);
+                    return resolve(false);
+                }
                 setTimeout(poll, 80);
             };
-            setTimeout(poll, 80); // first check after one tick
+            setTimeout(poll, 80);
         });
 
-    // =========================================================================
-    // CUSTOM CONFIRM DIALOG
-    // =========================================================================
     // Named showConfirm (not confirm) to avoid shadowing window.confirm.
     // Uses a custom modal because window.confirm is suppressed in some
     // cross-origin iframe contexts on modern browsers.
@@ -820,9 +912,6 @@
         overlay.addEventListener("click", e => { if (e.target === overlay) close(false); });
     });
 
-    // =========================================================================
-    // PANEL DRAG & POSITION PERSISTENCE
-    // =========================================================================
     // Drag by the title bar; ↘️ button snaps back to default bottom-right corner.
     // Position is saved in GM under "panelPos" and restored on each page load.
     // mousemove listener uses {passive:true} — we never call preventDefault
@@ -846,8 +935,10 @@
         let dragging = false, ox = 0, oy = 0;
 
         handle.addEventListener("mousedown", (e) => {
-            // Don't start drag when clicking the ↘️ reset button
-            if (e.target === resetBtn || resetBtn.contains(e.target)) return;
+            // Don't start drag when clicking either window-control button
+            const collapseBtn = document.getElementById("as-collapse-btn");
+            if (e.target === resetBtn   || resetBtn.contains(e.target))   return;
+            if (collapseBtn && (e.target === collapseBtn || collapseBtn.contains(e.target))) return;
             dragging = true;
             const r = panel.getBoundingClientRect();
             ox = e.clientX - r.left;
@@ -884,9 +975,85 @@
         });
     };
 
-    // =========================================================================
-    // CREATE PANEL
-    // =========================================================================
+    // Wires the yellow (−) collapse button and keeps the mini-status span
+    // in sync with the collapsed state.
+    //
+    // Collapsed state:
+    //   • #as-panel-body hidden  → panel shrinks to title bar only
+    //   • #as-mini-status shown  → tiny "· 12✅" counter inside the title bar
+    //   • drag handle bottom border removed → clean pill shape
+    //   • panel min-width reduced so it doesn't reserve 360px as a narrow strip
+    //
+    // Expanded state: everything restored.
+    //
+    // State persisted in GM storage so it survives page reloads.
+
+    const setupWindowControls = (panel) => {
+        const collapseBtn = document.getElementById("as-collapse-btn");
+        const panelBody   = document.getElementById("as-panel-body");
+        const miniStatus  = document.getElementById("as-mini-status");
+        const dragHandle  = document.getElementById("as-drag-handle");
+        if (!collapseBtn || !panelBody) return;
+
+        let collapsed = GM_getValue("panelCollapsed", false);
+
+        // applyCollapsed centralises every DOM mutation needed for a state change.
+        // Called once on init (no animation) and on every button click.
+        const applyCollapsed = (c) => {
+            collapsed = c;
+            if (c) {
+                // ── Minimised ─────────────────────────────────────────────
+                panelBody.style.display             = "none";
+                collapseBtn.textContent             = "+";
+                collapseBtn.title                   = "Restore panel";
+                collapseBtn.style.background        = "#34c759"; // green = "restore"
+                collapseBtn.style.borderColor       = "#2aa648";
+                collapseBtn.style.color             = "#0a4020";
+                if (miniStatus) miniStatus.style.display = "inline";
+                if (dragHandle) {
+                    dragHandle.style.borderBottom   = "none";
+                    dragHandle.style.marginBottom   = "0";
+                    dragHandle.style.paddingBottom  = "0";
+                }
+                panel.style.minWidth                = "auto";
+                panel.style.padding                 = "10px 16px";
+            } else {
+                // ── Expanded ──────────────────────────────────────────────
+                panelBody.style.display             = "block";
+                collapseBtn.textContent             = "−";
+                collapseBtn.title                   = "Minimize panel";
+                collapseBtn.style.background        = "#ffd60a"; // yellow = "minimise"
+                collapseBtn.style.borderColor       = "#e6bc00";
+                collapseBtn.style.color             = "#7a5f00";
+                if (miniStatus) miniStatus.style.display = "none";
+                if (dragHandle) {
+                    dragHandle.style.borderBottom   = "1px solid #ececec";
+                    dragHandle.style.marginBottom   = "10px";
+                    dragHandle.style.paddingBottom  = "8px";
+                }
+                panel.style.minWidth                = "360px";
+                panel.style.padding                 = "16px";
+            }
+            GM_setValue("panelCollapsed", collapsed);
+        };
+
+        // Expose a refresh helper for updateCounters so the mini label stays current
+        elCache._refreshMini = () => {
+            if (miniStatus && collapsed) {
+                miniStatus.textContent = ` · ${successCount}✅`;
+            }
+        };
+
+        // Restore persisted state on page load (no GM write needed, already saved)
+        applyCollapsed(collapsed);
+        elCache._refreshMini();
+
+        collapseBtn.addEventListener("click", (e) => {
+            e.stopPropagation(); // prevent the drag mousedown from also firing
+            applyCollapsed(!collapsed);
+            elCache._refreshMini();
+        });
+    };
 
     const createPanel = () => {
         if (document.getElementById("as-panel")) return;
@@ -904,95 +1071,140 @@
         const btnTxt  = isRunning ? "⏹️ STOP" : "▶️ START SENDING";
 
         panel.innerHTML = `
-            <!-- Drag handle ─────────────────────────────────────────────── -->
+            <!-- Title bar ───────────────────────────────────────────────── -->
+            <!-- Drag target. Contains status dot, brand name, window buttons. -->
             <div id="as-drag-handle"
                 style="display:flex;align-items:center;justify-content:space-between;
-                cursor:grab;user-select:none;margin-bottom:10px;padding-bottom:8px;
+                cursor:grab;user-select:none;padding-bottom:8px;margin-bottom:10px;
                 border-bottom:1px solid #ececec;">
-                <span style="font-size:15px;font-weight:bold;color:#333;">
-                    ⠿ ${BRAND} v${VERSION}
-                </span>
-                <button id="as-reset-pos" title="Reset panel to bottom-right corner"
-                    style="background:none;border:1px solid #ccc;border-radius:4px;
-                    width:26px;height:26px;line-height:1;cursor:pointer;
-                    font-size:14px;color:#888;padding:0;flex-shrink:0;">↘️</button>
-            </div>
 
-            <!-- Main action buttons ─────────────────────────────────────── -->
-            <button id="as-toggle-btn"
-                style="width:100%;padding:14px;background:${btnBg};color:#fff;border:none;
-                border-radius:8px;font-size:15px;font-weight:bold;cursor:pointer;
-                margin-bottom:10px;">${btnTxt}
-            </button>
-
-            <button id="as-settings-btn"
-                style="width:100%;padding:10px;background:#f0f0f0;color:#333;
-                border:1px solid #ccc;border-radius:8px;cursor:pointer;margin-bottom:8px;">
-                ⚙️ Settings
-            </button>
-
-            <button id="as-clear-btn"
-                style="width:100%;padding:8px;background:#fff0f0;color:#d9534f;
-                border:1px solid #f5c6c6;border-radius:8px;cursor:pointer;
-                margin-bottom:14px;font-size:13px;">
-                🗑 Clear session &amp; logs
-            </button>
-
-            <!-- Counters ────────────────────────────────────────────────── -->
-            <div style="margin-bottom:14px;font-size:13px;color:#444;
-                display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;text-align:center;">
-                <div style="background:#f0fff4;border:1px solid #c3e6cb;
-                    border-radius:6px;padding:6px 4px;">
-                    ✅ Sent<br><b id="as-sent">${successCount}</b>
-                </div>
-                <!-- Clickable: opens skipped jobs popup -->
-                <div id="as-complex-cell"
-                    style="background:#fff3cd;border:1px solid #ffc107;border-radius:6px;
-                    padding:6px 4px;cursor:pointer;transition:background .15s;"
-                    title="Click to view skipped jobs"
-                    onmouseenter="this.style.background='#ffe69c'"
-                    onmouseleave="this.style.background='#fff3cd'">
-                    ⏩ Skipped
-                    <span style="font-size:10px;color:#999;vertical-align:super;"
-                        title="Jobs requiring a full form — skipped automatically.">?</span>
-                    <br><b id="as-complex">${complexCount}</b>
-                </div>
-                <div style="background:#e8f4fd;border:1px solid #bee5eb;
-                    border-radius:6px;padding:6px 4px;">
-                    🔖 Seen<br><b id="as-total">${processedIds.size}</b>
-                </div>
-            </div>
-
-            <!-- Live log ────────────────────────────────────────────────── -->
-            <div>
-                <div style="display:flex;align-items:center;
-                    justify-content:space-between;margin-bottom:4px;">
-                    <span id="as-log-header"
-                        style="font-size:13px;color:#555;cursor:pointer;user-select:none;">
-                        ▼ Live Log
+                <!-- Left: status dot + brand -->
+                <div style="display:flex;align-items:center;gap:7px;min-width:0;">
+                    <!-- Running indicator: green = running, grey = idle.
+                         Visible in both expanded and collapsed states.  -->
+                    <span id="as-status-dot"
+                        style="width:9px;height:9px;border-radius:50%;flex-shrink:0;
+                        background:${isRunning ? "#27ae60" : "#bbb"};
+                        box-shadow:${isRunning ? "0 0 0 2px rgba(39,174,96,.25)" : "none"};
+                        transition:background .3s,box-shadow .3s;">
                     </span>
-                    <button id="as-copy-btn"
-                        style="padding:3px 9px;font-size:12px;background:#f0f0f0;
-                        border:1px solid #ccc;border-radius:4px;cursor:pointer;">
-                        📋 Copy
+                    <span style="font-size:15px;font-weight:bold;color:#333;white-space:nowrap;">
+                        ⠿ ${BRAND} v${VERSION}
+                    </span>
+                    <!-- Mini sent counter: only visible when panel is collapsed -->
+                    <span id="as-mini-status"
+                        style="display:none;font-size:12px;color:#666;white-space:nowrap;">
+                        · ${successCount}✅
+                    </span>
+                </div>
+
+                <!-- Right: window management buttons -->
+                <div style="display:flex;align-items:center;gap:3px;flex-shrink:0;margin-left:8px;">
+                    <!-- Minimize/restore ─────────────────────────────────── -->
+                    <button id="as-collapse-btn"
+                        title="Minimize panel"
+                        style="background:#ffd60a;border:1px solid #e6bc00;border-radius:50%;
+                        width:14px;height:14px;cursor:pointer;font-size:9px;color:#7a5f00;
+                        padding:0;line-height:14px;display:flex;align-items:center;
+                        justify-content:center;font-weight:bold;flex-shrink:0;">
+                        −
+                    </button>
+                    <!-- Snap to corner ───────────────────────────────────── -->
+                    <button id="as-reset-pos"
+                        title="Snap panel to bottom-right corner"
+                        style="background:#34c759;border:1px solid #2aa648;border-radius:50%;
+                        width:14px;height:14px;cursor:pointer;font-size:8px;color:#0a4020;
+                        padding:0;line-height:14px;display:flex;align-items:center;
+                        justify-content:center;font-weight:bold;flex-shrink:0;">
+                        ↘
                     </button>
                 </div>
-                <div id="as-log"
-                    style="background:#1a1a2e;color:#e0e0e0;border:1px solid #333;
-                    border-radius:6px;padding:10px;height:190px;overflow-y:auto;
-                    font-size:11.5px;line-height:1.6;font-family:monospace;
-                    display:${logOpen};">
+            </div>
+
+            <!-- Panel body ───────────────────────────────────────────────── -->
+            <!-- Hidden when minimized. All content below the title bar lives here. -->
+            <div id="as-panel-body">
+
+                <!-- Main action buttons ─────────────────────────────────── -->
+                <button id="as-toggle-btn"
+                    style="width:100%;padding:14px;background:${btnBg};color:#fff;border:none;
+                    border-radius:8px;font-size:15px;font-weight:bold;cursor:pointer;
+                    margin-bottom:10px;">${btnTxt}
+                </button>
+
+                <button id="as-settings-btn"
+                    style="width:100%;padding:10px;background:#f0f0f0;color:#333;
+                    border:1px solid #ccc;border-radius:8px;cursor:pointer;margin-bottom:8px;">
+                    ⚙️ Settings
+                </button>
+
+                <button id="as-clear-btn"
+                    style="width:100%;padding:8px;background:#fff0f0;color:#d9534f;
+                    border:1px solid #f5c6c6;border-radius:8px;cursor:pointer;
+                    margin-bottom:14px;font-size:13px;">
+                    🗑 Clear session &amp; logs
+                </button>
+
+                <!-- Counters ────────────────────────────────────────────── -->
+                <div style="margin-bottom:14px;font-size:13px;color:#444;
+                    display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;text-align:center;">
+                    <div style="background:#f0fff4;border:1px solid #c3e6cb;
+                        border-radius:6px;padding:6px 4px;">
+                        ✅ Sent<br><b id="as-sent">${successCount}</b>
+                    </div>
+                    <!-- Clickable: opens skipped jobs popup -->
+                    <div id="as-complex-cell"
+                        style="background:#fff3cd;border:1px solid #ffc107;border-radius:6px;
+                        padding:6px 4px;cursor:pointer;transition:background .15s;"
+                        title="Click to view skipped jobs"
+                        onmouseenter="this.style.background='#ffe69c'"
+                        onmouseleave="this.style.background='#fff3cd'">
+                        ⏩ Skipped
+                        <span style="font-size:10px;color:#999;vertical-align:super;"
+                            title="Jobs requiring a full form — skipped automatically.">?</span>
+                        <br><b id="as-complex">${complexCount}</b>
+                    </div>
+                    <div style="background:#e8f4fd;border:1px solid #bee5eb;
+                        border-radius:6px;padding:6px 4px;">
+                        🔖 Seen<br><b id="as-total">${processedIds.size}</b>
+                    </div>
                 </div>
-            </div>`;
+
+                <!-- Live log ────────────────────────────────────────────── -->
+                <div>
+                    <div style="display:flex;align-items:center;
+                        justify-content:space-between;margin-bottom:4px;">
+                        <span id="as-log-header"
+                            style="font-size:13px;color:#555;cursor:pointer;user-select:none;">
+                            ▼ Live Log
+                        </span>
+                        <button id="as-copy-btn"
+                            style="padding:3px 9px;font-size:12px;background:#f0f0f0;
+                            border:1px solid #ccc;border-radius:4px;cursor:pointer;">
+                            📋 Copy
+                        </button>
+                    </div>
+                    <div id="as-log"
+                        style="background:#1a1a2e;color:#e0e0e0;border:1px solid #333;
+                        border-radius:6px;padding:10px;height:190px;overflow-y:auto;
+                        font-size:11.5px;line-height:1.6;font-family:monospace;
+                        display:${logOpen};">
+                    </div>
+                </div>
+
+            </div><!-- /#as-panel-body -->`;
 
         document.body.appendChild(panel);
 
         // Populate element cache immediately after panel is in the DOM.
-        elCache.log       = document.getElementById("as-log");
-        elCache.toggleBtn = document.getElementById("as-toggle-btn");
-        elCache.sentEl    = document.getElementById("as-sent");
-        elCache.complexEl = document.getElementById("as-complex");
-        elCache.totalEl   = document.getElementById("as-total");
+        elCache.log         = document.getElementById("as-log");
+        elCache.toggleBtn   = document.getElementById("as-toggle-btn");
+        elCache.sentEl      = document.getElementById("as-sent");
+        elCache.complexEl   = document.getElementById("as-complex");
+        elCache.totalEl     = document.getElementById("as-total");
+        elCache.statusDot   = document.getElementById("as-status-dot");
+        elCache.miniStatus  = document.getElementById("as-mini-status");
+        elCache.panelBody   = document.getElementById("as-panel-body");
 
         // Wire event handlers
         document.getElementById("as-toggle-btn").onclick   = toggleSending;
@@ -1027,7 +1239,10 @@
             stopTabIndicator();
             clearSession();                    // resets all session vars + logLines
             updateCounters();
-            scheduleRender();                  // repaint now-empty log
+        if (!_renderPending) {
+            _renderPending = true;
+            requestAnimationFrame(() => { _renderPending = false; renderLog(); });
+        }
 
             if (wasRunning) {
                 elCache.toggleBtn.textContent      = "▶️ START SENDING";
@@ -1038,18 +1253,21 @@
         };
 
         setupDrag(panel);
+        setupWindowControls(panel);
         updateCounters();
         renderLog(); // replay any log lines emitted before the panel existed
     };
-
-    // =========================================================================
-    // TOGGLE SENDING
-    // =========================================================================
 
     const toggleSending = () => {
         isRunning = !isRunning;
 
         if (isRunning) {
+            // Auto-expand so the user can see the log and stop button
+            const collapseBtn = document.getElementById("as-collapse-btn");
+            if (collapseBtn && collapseBtn.textContent.trim() === "+") {
+                collapseBtn.click(); // restore via the same handler (persists state too)
+            }
+
             // Capture the search URL only on a deliberate user START.
             // Auto-resume must NOT overwrite this — it would lose the return target.
             originalSearchUrl = location.href;
@@ -1074,9 +1292,6 @@
         }
     };
 
-    // =========================================================================
-    // SETTINGS DIALOG
-    // =========================================================================
     // Contains: Resume ID (with hint), delay, collapsible template editors.
 
     // Rebuild the template <details> list for the given working-copy array.
@@ -1172,9 +1387,6 @@
         });
     };
 
-    // =========================================================================
-    // RESUME TITLE AUTO-FETCH
-    // =========================================================================
     // hh.ru resume pages require the user to be logged in. Since this script
     // runs on *.hh.ru and the user is already authenticated, fetch() with
     // credentials:'include' works on the same domain — no CORS issue.
@@ -1191,32 +1403,31 @@
         if (!id) return "";
         try {
             const res = await fetch(`https://hh.ru/resume/${id}`, {
-                credentials: "include",         // send hh.ru auth cookies
-                cache:       "no-store",        // always fresh
+                credentials: "include",
+                cache:       "no-store",
             });
-            if (!res.ok) return "";             // not logged in or 404
-
+            if (!res.ok) {
+                log(`⚠️ fetchResumeTitle: HTTP ${res.status} for id "${id.slice(0,12)}…"`);
+                if (res.status === 403) log("   → not logged in to hh.ru");
+                if (res.status === 404) log("   → resume not found or private");
+                return "";
+            }
             const html = await res.text();
-
-            // Extract <title> content. hh.ru renders server-side so it's
-            // present in the raw HTML without JS execution.
             const m = html.match(/<title[^>]*>([^<]+)<\/title>/i);
-            if (!m) return "";
-
-            // "Менеджер по продукту — Иванов Иван — Резюме на hh.ru"
-            //  → "Менеджер по продукту"
+            if (!m) {
+                log("⚠️ fetchResumeTitle: no <title> found — hh.ru markup may have changed");
+                return "";
+            }
             const raw   = m[1].replace(/&amp;/g, "&").replace(/&nbsp;/g, " ").trim();
-            const parts = raw.split(/\s+—\s+/);   // em-dash separator used by hh.ru
-            // parts[0] is the desired position; guard against unexpected format
-            return parts[0]?.trim() || raw.slice(0, 60);
-        } catch {
-            return "";  // network error, CORS, etc. — silently degrade
+            const label = raw.split(/\s+—\s+/)[0]?.trim() || raw.slice(0, 60);
+            log(`✅ fetchResumeTitle: "${label}"`);
+            return label;
+        } catch (err) {
+            log(`❌ fetchResumeTitle: ${err.message}`);
+            return "";
         }
     };
 
-    // =========================================================================
-    // RESUME LIST BUILDER  (used inside the Settings dialog)
-    // =========================================================================
     // Renders editResumes[] as a list of rows:
     //   ● radio button | resume ID input | label (editable or "Fetching…") | 🗑
     //
@@ -1584,128 +1795,147 @@
         });
 
         dialog.querySelector("#as-save-set").onclick = async () => {
+            const saveBtn = dialog.querySelector("#as-save-set");
+
             // ── Validate resumes ────────────────────────────────────────────
             const validResumes = editResumes.filter(r => r.id.trim());
             if (validResumes.length === 0) {
-                // Show inline error in the resume section
                 let errEl = dialog.querySelector("#as-resume-err");
                 if (!errEl) {
                     errEl = document.createElement("div");
                     errEl.id = "as-resume-err";
-                    errEl.style.cssText = "font-size:11px;color:#d9534f;margin-bottom:8px;";
+                    errEl.style.cssText =
+                        "font-size:11px;color:#d9534f;margin-bottom:8px;" +
+                        "padding:6px 8px;background:#fff0f0;border-radius:4px;";
                     resumeListEl.after(errEl);
                 }
-                errEl.textContent = "Add at least one resume ID before saving.";
+                errEl.textContent = "⚠ Add at least one resume ID before saving.";
+                resumeListEl.scrollIntoView({ behavior: "smooth", block: "nearest" });
                 return;
             }
-            // Clamp active index to valid range after filtering
-            const finalActiveIdx = Math.min(
-                editActiveIdx,
-                validResumes.length - 1
-            );
 
-            // Disable save button to prevent double-submit during async fetch
-            const saveBtn = dialog.querySelector("#as-save-set");
+            const finalActiveIdx = Math.min(editActiveIdx, validResumes.length - 1);
+
+            // Disable save button — re-enabled in finally block
             saveBtn.disabled    = true;
             saveBtn.textContent = "Saving…";
+            saveBtn.style.opacity = "0.7";
 
-            // ── Auto-fetch missing labels ───────────────────────────────────
-            // For every resume whose label is empty, try to fetch the title
-            // from hh.ru in parallel. The fetch is best-effort: failures are
-            // silently ignored and the label stays empty (user can type it).
-            // We do this here (on Save) rather than on every keystroke to keep
-            // the dialog snappy.
-            await Promise.all(
-                validResumes.map(async (r, i) => {
-                    if (r.label.trim()) return; // already has a label
-                    const fetched = await fetchResumeTitle(r.id.trim());
-                    if (fetched) {
-                        r.label = fetched;
-                        // Update the label input in the DOM so the user sees it
-                        const rows = resumeListEl.querySelectorAll("div[data-resume-row]");
-                        if (rows[i]?._labelInp) rows[i]._labelInp.value = fetched;
+            try {
+                // ── Auto-fetch missing labels (best-effort, parallel) ───────
+                await Promise.all(
+                    validResumes.map(async (r, i) => {
+                        if (r.label.trim()) return; // already labelled
+                        const fetched = await fetchResumeTitle(r.id.trim());
+                        if (fetched) {
+                            r.label = fetched;
+                            const rows = resumeListEl.querySelectorAll("div[data-resume-row]");
+                            const rowEl = rows[i];
+                            if (rowEl?._labelInp) rowEl._labelInp.value = fetched;
+                        }
+                    })
+                );
+
+                // ── Delay ────────────────────────────────────────────────────
+                config.DELAY_MS = Math.max(
+                    1500,
+                    parseInt(dialog.querySelector("#as-delay-inp").value) || 3000
+                );
+
+                // ── Randomized delay ─────────────────────────────────────────
+                const randEnabled = dialog.querySelector("#as-rand-chk").checked;
+                const randErr     = dialog.querySelector("#as-rand-err");
+
+                if (randEnabled) {
+                    const rMin = parseInt(dialog.querySelector("#as-rand-min").value) || 0;
+                    const rMax = parseInt(dialog.querySelector("#as-rand-max").value) || 0;
+                    if (rMin < 100) {
+                        randErr.textContent   = "Min delay must be at least 100 ms.";
+                        randErr.style.display = "block";
+                        return; // finally block re-enables button
                     }
-                })
-            );
-
-            // ── Save all other settings ─────────────────────────────────────
-            config.DELAY_MS = Math.max(
-                1500,
-                parseInt(dialog.querySelector("#as-delay-inp").value) || 3000
-            );
-
-            const randEnabled = dialog.querySelector("#as-rand-chk").checked;
-            if (randEnabled) {
-                const rMin = parseInt(dialog.querySelector("#as-rand-min").value) || 0;
-                const rMax = parseInt(dialog.querySelector("#as-rand-max").value) || 0;
-                const errEl = dialog.querySelector("#as-rand-err");
-
-                if (rMin < 100) {
-                    errEl.textContent   = "Min delay must be at least 100 ms.";
-                    errEl.style.display = "block";
-                    saveBtn.disabled    = false;
-                    saveBtn.textContent = "Save";
-                    return;
-                }
-                if (rMax <= rMin) {
-                    errEl.textContent   = "Max delay must be greater than min delay.";
-                    errEl.style.display = "block";
-                    saveBtn.disabled    = false;
-                    saveBtn.textContent = "Save";
-                    return;
+                    if (rMax <= rMin) {
+                        randErr.textContent   = "Max delay must be greater than min delay.";
+                        randErr.style.display = "block";
+                        return;
+                    }
+                    config.RAND_ENABLED = true;
+                    config.RAND_MIN     = rMin;
+                    config.RAND_MAX     = rMax;
+                    config.DELAY_MS     = sampleDelay();
+                    _responsesSinceRotation = 0;
+                    _nextRotateAt           = _randInt(4, 7);
+                } else {
+                    config.RAND_ENABLED = false;
                 }
 
-                config.RAND_ENABLED = true;
-                config.RAND_MIN     = rMin;
-                config.RAND_MAX     = rMax;
-                config.DELAY_MS     = sampleDelay();
-                _responsesSinceRotation = 0;
-                _nextRotateAt           = _randInt(4, 7);
-            } else {
-                config.RAND_ENABLED = false;
+                // ── Templates ────────────────────────────────────────────────
+                const finalTpls = editTpls.map(t => t.trim()).filter(Boolean);
+                coverTemplates  = finalTpls.length ? finalTpls : [...DEFAULT_TEMPLATES];
+                config.TEMPLATE_ID = Math.min(editIdx, coverTemplates.length - 1);
+
+                const tmplRandWanted = dialog.querySelector("#as-tmpl-rand-chk").checked;
+                config.TMPL_RANDOM   = tmplRandWanted && coverTemplates.length >= 2;
+
+                // ── Persist all to GM storage ────────────────────────────────
+                config.RESUMES           = validResumes;
+                config.ACTIVE_RESUME_IDX = finalActiveIdx;
+
+                GM_setValue("resumes",        JSON.stringify(validResumes));
+                GM_setValue("activeResumeIdx", finalActiveIdx);
+                GM_setValue("delayMs",         config.DELAY_MS);
+                GM_setValue("templateId",      config.TEMPLATE_ID);
+                GM_setValue("userTemplates",   JSON.stringify(coverTemplates));
+                GM_setValue("randEnabled",     config.RAND_ENABLED);
+                GM_setValue("randMin",         config.RAND_MIN);
+                GM_setValue("randMax",         config.RAND_MAX);
+                GM_setValue("tmplRandom",      config.TMPL_RANDOM);
+
+                // ── Success feedback ─────────────────────────────────────────
+                saveBtn.textContent   = "✅ Saved!";
+                saveBtn.style.background = "#27ae60";
+                saveBtn.style.opacity    = "1";
+                saveBtn.disabled         = false;
+
+                // Build human-readable save summary for the log
+                const activeResume = validResumes[finalActiveIdx];
+                const resumeLabel  = activeResume.label || activeResume.id.slice(0, 14) + "…";
+                const delayStr     = config.RAND_ENABLED
+                    ? `random [${config.RAND_MIN}–${config.RAND_MAX}ms]`
+                    : `${config.DELAY_MS}ms fixed`;
+                const tmplStr      = config.TMPL_RANDOM
+                    ? `random from ${coverTemplates.length}`
+                    : `template #${config.TEMPLATE_ID + 1} of ${coverTemplates.length}`;
+
+                log(`✅ Settings saved:`);
+                log(`   resumes : ${validResumes.length} stored · active: "${resumeLabel}"`);
+                log(`   delay   : ${delayStr}`);
+                log(`   cover   : ${tmplStr}`);
+                if (validResumes.length > 1) {
+                    validResumes.forEach((r, i) => {
+                        log(`   resume[${i}]: ${r.label || r.id.slice(0, 20)} ${i === finalActiveIdx ? "← active" : ""}`);
+                    });
+                }
+
+                // Close dialog after a short moment so the user sees "✅ Saved!"
+                setTimeout(() => { overlay.remove(); dialog.remove(); }, 900);
+
+            } catch (err) {
+                // Any unexpected error (network, DOM exception, etc.) lands here.
+                // Log it, show it on the button, never leave the button stuck.
+                console.error("[HH Boost] Settings save error:", err);
+                log(`❌ Settings save failed: ${err.message}`);
+                saveBtn.textContent      = "⚠ Error — retry";
+                saveBtn.style.background = "#d9534f";
+                saveBtn.style.opacity    = "1";
+                saveBtn.disabled         = false;
             }
-
-            const finalTpls    = editTpls.map(t => t.trim()).filter(Boolean);
-            coverTemplates     = finalTpls.length ? finalTpls : [...DEFAULT_TEMPLATES];
-            config.TEMPLATE_ID = Math.min(editIdx, coverTemplates.length - 1);
-
-            const tmplRandWanted = dialog.querySelector("#as-tmpl-rand-chk").checked;
-            config.TMPL_RANDOM   = tmplRandWanted && coverTemplates.length >= 2;
-
-            // ── Persist ─────────────────────────────────────────────────────
-            // Resumes and activeResumeIdx are config (not session) — never
-            // cleared by "Clear session".
-            config.RESUMES           = validResumes;
-            config.ACTIVE_RESUME_IDX = finalActiveIdx;
-
-            GM_setValue("resumes",         JSON.stringify(validResumes));
-            GM_setValue("activeResumeIdx", finalActiveIdx);
-            GM_setValue("delayMs",         config.DELAY_MS);
-            GM_setValue("templateId",      config.TEMPLATE_ID);
-            GM_setValue("userTemplates",   JSON.stringify(coverTemplates));
-            GM_setValue("randEnabled",     config.RAND_ENABLED);
-            GM_setValue("randMin",         config.RAND_MIN);
-            GM_setValue("randMax",         config.RAND_MAX);
-            GM_setValue("tmplRandom",      config.TMPL_RANDOM);
-
-            overlay.remove(); dialog.remove();
-
-            const activeResume = validResumes[finalActiveIdx];
-            const randNote     = config.RAND_ENABLED
-                ? `  rand:[${config.RAND_MIN}–${config.RAND_MAX}ms]` : "";
-            const tmplNote     = config.TMPL_RANDOM
-                ? "  tmpl:random" : `  tmpl:${config.TEMPLATE_ID + 1}`;
-            log(`✅ Settings saved — resume:"${activeResume.label || activeResume.id.slice(0,12)}"  delay:${config.DELAY_MS}ms${randNote}  templates:${coverTemplates.length}${tmplNote}`);
         };
 
         const closeDialog = () => { overlay.remove(); dialog.remove(); };
         dialog.querySelector("#as-cancel-set").onclick = closeDialog;
         overlay.addEventListener("click", e => { if (e.target === overlay) closeDialog(); });
     };
-
-    // =========================================================================
-    // MAIN PROCESSING LOOP
-    // =========================================================================
 
     const startProcessing = async () => {
         if (isProcessingActive) {
@@ -1752,13 +1982,13 @@
                     // landing on the next card before reaching for the mouse.
                     // Short enough to be imperceptible as delay, human enough to
                     // break the fixed-cadence signature of a bot.
-                    await sleep(_jitterMs(20, 70));
+                    await sleep(_randInt(20, 70));
 
                     // scrollIntoView "instant" + short random settle (50–130 ms).
                     // "instant" skips the CSS scroll animation entirely — no waiting
                     // for a cosmetic effect the automated flow doesn't need.
                     btn.scrollIntoView({ behavior: "instant", block: "center" });
-                    await sleep(_jitterMs(50, 130));
+                    await sleep(_randInt(50, 130));
 
                     const urlBefore = location.href;
                     await humanInteract(btn);
@@ -1784,7 +2014,8 @@
                             log(`🔀 Complex — id:${finalId} "${jobTitle}"`);
                         }
 
-                        markProcessed(vid, urlVid); // null-safe
+                        markProcessed(vid, urlVid);
+                        applyVisitedStyles(); // immediately dim this card // null-safe
                         complexCount++;
                         pushComplexJob({
                             id:    finalId,
@@ -1805,7 +2036,7 @@
                         if (spaOk) {
                             log("♻️ SPA back OK — continuing");
                             // Random settle lets React re-render without a fixed cadence.
-                            await sleep(_jitterMs(350, 600));
+                            await sleep(_randInt(350, 600));
                             didComplexSkip = true;
                             break; // re-query fresh button list in outer while
                         } else {
@@ -1820,6 +2051,7 @@
 
                     // ── SIMPLE MODAL (cover letter) ──────────────────────────
                     markProcessed(vid);
+                    applyVisitedStyles(); // immediately green-tint this card
 
                     const textarea = document.querySelector("textarea");
                     if (textarea) {
@@ -1836,7 +2068,7 @@
                         // React/Vue detect value via 'input' event, not bare assignment.
                         textarea.dispatchEvent(new Event("input", { bubbles: true }));
                         // Random wait (300–500ms) for React's validation pass.
-                        await sleep(_jitterMs(300, 500));
+                        await sleep(_randInt(300, 500));
 
                         // ── hh.ru validation fallback ─────────────────────────
                         // If the cover letter text is rejected (aria-invalid="true" or
@@ -1851,7 +2083,7 @@
                             log("⚠️ Cover letter rejected by hh.ru — sending without cover");
                             textarea.value = "";
                             textarea.dispatchEvent(new Event("input", { bubbles: true }));
-                            await sleep(_jitterMs(100, 200)); // brief settle after clear
+                            await sleep(_randInt(100, 200)); // brief settle after clear
                         }
 
                         const submitBtn =
@@ -1869,7 +2101,7 @@
                             // or sleeping — the error message appears immediately
                             // in the DOM after the failed submit attempt.
                             // Random wait 300–500ms: snappy but gives hh.ru time to render.
-                            await sleep(_jitterMs(300, 500));
+                            await sleep(_randInt(300, 500));
                             if (isDailyLimitHit()) {
                                 handleDailyLimit();
                                 return; // exits startProcessing entirely
@@ -1905,13 +2137,17 @@
 
                 // Random inter-pass pause (500–900 ms) before re-querying buttons.
                 // Handles lazy-loaded cards and breaks any fixed timing pattern.
-                await sleep(_jitterMs(500, 900));
+                await sleep(_randInt(500, 900));
             } // end while
 
         } catch (err) {
-            log(`❌ ERROR: ${err.message}`);
-            log(`   ${err.stack?.split("\n")[1]?.trim() ?? "no stack"}`);
-            log("🛑 Loop stopped — press START to retry");
+            log(`❌ LOOP ERROR: ${err.message}`);
+            // Log up to 4 stack lines so the exact call site is visible in the panel
+            (err.stack || "").split("\n").slice(1, 5).forEach(line => {
+                const trimmed = line.trim();
+                if (trimmed) log(`   ${trimmed}`);
+            });
+            log("🛑 Loop stopped — check log above, then press START to retry");
             stopTabIndicator();
         } finally {
             // Always release the guard so a new loop can start after an error.
@@ -1919,9 +2155,6 @@
         }
     };
 
-    // =========================================================================
-    // AUTO-RESUME
-    // =========================================================================
     // Called on every page load. If isRunning=true in GM storage a
     // window.location.href navigation just occurred and we must resume.
     //
@@ -1957,9 +2190,6 @@
         startProcessing();
     };
 
-    // Bfcache (back-forward cache) handler.
-    // When history.back() lands on a bfcache copy of the search page,
-    // DOMContentLoaded does not fire again but 'pageshow' does (event.persisted=true).
     window.addEventListener("pageshow", (e) => {
         if (e.persisted && isRunning && !isProcessingActive) {
             log("♻️ Bfcache restore — resuming");
@@ -1968,15 +2198,24 @@
         }
     });
 
-    // =========================================================================
-    // INIT
-    // =========================================================================
     // Multiple retries handle hh.ru's deferred React hydration that can push
     // body population past document-end.
 
     const init = () => {
         if (document.getElementById("as-panel")) return;
         createPanel();
+
+        // Focus guard — warn user when they try to leave the tab while running
+        setupFocusGuard();
+
+        // Visited highlighting — inject CSS once and apply to already-known IDs
+        _injectVisitedCSS();
+        // Delay slightly so hh.ru's React has rendered the vacancy cards
+        setTimeout(() => {
+            applyVisitedStyles();
+            setupVisitedObserver(); // re-apply on lazy-load scroll
+        }, 1200);
+
         // 800 ms: lets hh.ru's React SPA settle its URL before we read it.
         setTimeout(maybeAutoResume, 800);
     };
@@ -1994,6 +2233,10 @@
     });
     obs.observe(document.body, { childList: true, subtree: false });
 
-    log(`${BRAND} v${VERSION} initialized — ${location.pathname}`);
+    log(`${BRAND} v${VERSION} — ${location.pathname}`);
+    log(`   isRunning:${isRunning}  sent:${successCount}  skipped:${complexCount}  seen:${processedIds.size}`);
+    log(`   resumes:${config.RESUMES.length}  active:"${config.RESUME_ID?.slice(0,14) ?? "none"}"`);
+    log(`   delay:${config.DELAY_MS}ms${config.RAND_ENABLED ? ` rand[${config.RAND_MIN}–${config.RAND_MAX}]` : ""}  templates:${coverTemplates.length}${config.TMPL_RANDOM ? " (random)" : ""}`);
+    if (originalSearchUrl) log(`   searchURL: ${originalSearchUrl.slice(0, 80)}`);
 
 })();
