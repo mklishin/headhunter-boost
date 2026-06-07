@@ -93,8 +93,9 @@
         // [RAND_MIN, RAND_MAX] and rotated every 4–7 sent responses.
         // randEnabled is a config key (never cleared by "Clear session").
         RAND_ENABLED: GM_getValue("randEnabled", false),
-        RAND_MIN:     GM_getValue("randMin",     1500),   // ms; UI enforces ≥ 100
-        RAND_MAX:     GM_getValue("randMax",     5000),   // ms; must be > RAND_MIN
+        RAND_MIN:     GM_getValue("randMin",     1500),
+        RAND_MAX:     GM_getValue("randMax",     5000),
+        DARK_THEME:   GM_getValue("darkTheme",   false),
     };
 
     // Clamp saved templateId in case templates were deleted since last run.
@@ -615,7 +616,6 @@
         requestAnimationFrame(() => {
             _visitedPending = false;
             const skipped = new Set(complexJobs.map(j => j.id).filter(Boolean));
-            let tagged = 0;
             document.querySelectorAll('[data-qa="vacancy-serp__vacancy"]').forEach(card => {
                 const m = card.querySelector('[data-qa="serp-item__title"]')?.href?.match(/\/vacancy\/(\d+)/);
                 if (!m) return;
@@ -624,14 +624,26 @@
                 const status = skipped.has(vid) ? "skipped" : "applied";
                 if (card.dataset.hhb === status) return;
                 card.dataset.hhb = status;
+
+                const bg    = status === "applied" ? "rgba(39,174,96,0.13)" : "rgba(130,130,145,0.11)";
+                const outln = status === "applied" ? "2px solid rgba(39,174,96,0.55)" : "2px solid rgba(130,130,145,0.40)";
+
+                // Paint the card root AND its first child div (hh.ru magritte wraps
+                // card content in a child div whose own background would cover the root).
+                // outline is always visible on top of any background.
+                card.style.setProperty("background-color", bg, "important");
+                card.style.setProperty("outline", outln, "important");
+                card.style.setProperty("outline-offset", "-2px", "important");
+                card.style.setProperty("position", "relative", "important");
+                const inner = card.querySelector(":scope > div");
+                if (inner) inner.style.setProperty("background-color", bg, "important");
+
                 card.querySelector(".as-visited-badge")?.remove();
                 const badge = document.createElement("div");
                 badge.className   = `as-visited-badge ${status}`;
                 badge.textContent = status === "applied" ? "✓ Отклик" : "⏩ Пропущено";
                 card.appendChild(badge);
-                tagged++;
             });
-            if (tagged > 0) log(`🎨 Marked ${tagged} card(s) as visited`);
         });
     };
 
@@ -917,6 +929,81 @@
     // mousemove listener uses {passive:true} — we never call preventDefault
     // inside it, so marking it passive lets the browser compositor run freely.
 
+    // ── Theme ────────────────────────────────────────────────────────────────
+    // Injected once on init; toggled by adding/removing class "as-dark" on
+    // #as-panel. Using a class + a single <style> tag means zero overhead
+    // during the processing loop — no listeners, no timers, no observers.
+    // Inline styles on panel children are overridden via !important where
+    // needed (the only correct way to beat inline specificity from CSS).
+
+    const _injectThemeCSS = () => {
+        if (document.getElementById("as-theme-css")) return;
+        const s = document.createElement("style");
+        s.id = "as-theme-css";
+        s.textContent = `
+            #as-panel.as-dark{background:#1e1e2e!important;border-color:#585b70!important}
+            #as-panel.as-dark #as-drag-handle{border-bottom-color:#313244!important}
+            #as-panel.as-dark #as-brand-span{color:#ffffff!important;font-weight:900!important}
+            #as-panel.as-dark #as-reset-pos{border-color:#45475a!important;color:#a6adc8!important;background:none!important}
+            #as-panel.as-dark #as-collapse-btn{border-color:#45475a!important}
+            #as-panel.as-dark #as-settings-btn{background:#313244!important;color:#cdd6f4!important;border-color:#45475a!important}
+            #as-panel.as-dark #as-clear-btn{background:#2d1016!important;color:#f38ba8!important;border-color:#5a2030!important}
+            #as-panel.as-dark .as-cc{background:#181825!important;border-color:#313244!important;color:#cdd6f4!important}
+            #as-panel.as-dark .as-cc b{color:#cdd6f4!important}
+            #as-panel.as-dark #as-complex-cell{background:#2a2000!important;border-color:#5c4a00!important}
+            #as-panel.as-dark #as-log-header{color:#a6adc8!important}
+            #as-panel.as-dark #as-copy-btn{background:#313244!important;color:#cdd6f4!important;border-color:#45475a!important}
+            #as-panel.as-dark #as-mini-status{color:#cdd6f4!important}
+
+            /* ── Settings dialog ── */
+            #as-settings-dlg.as-dark{background:#1e1e2e!important;color:#cdd6f4!important}
+            /* header and footer borders */
+            #as-settings-dlg.as-dark>div{border-color:#313244!important;background:#1e1e2e!important}
+            /* h2, labels, bold text that carry no inline color */
+            #as-settings-dlg.as-dark h2,
+            #as-settings-dlg.as-dark label,
+            #as-settings-dlg.as-dark b{color:#cdd6f4!important}
+            /* inline-colored hint/subtext — mapped by original hex value */
+            #as-settings-dlg.as-dark [style*="color:#333"]{color:#cdd6f4!important}
+            #as-settings-dlg.as-dark [style*="color:#444"]{color:#bac2de!important}
+            #as-settings-dlg.as-dark [style*="color:#555"]{color:#a6adc8!important}
+            #as-settings-dlg.as-dark [style*="color:#888"]{color:#7f849c!important}
+            #as-settings-dlg.as-dark [style*="color:#999"]{color:#6c7086!important}
+            #as-settings-dlg.as-dark [style*="color:#aaa"]{color:#6c7086!important}
+            /* keep error/warning colours legible on dark */
+            #as-settings-dlg.as-dark [style*="color:#d9534f"]{color:#f38ba8!important}
+            #as-settings-dlg.as-dark [style*="color:#c0392b"]{color:#f38ba8!important}
+            /* inputs, selects, textareas */
+            #as-settings-dlg.as-dark input,
+            #as-settings-dlg.as-dark select,
+            #as-settings-dlg.as-dark textarea{background:#313244!important;color:#cdd6f4!important;border-color:#45475a!important}
+            /* all buttons except orange Save and theme toggle */
+            #as-settings-dlg.as-dark button:not(#as-save-set):not(#as-theme-btn){background:#313244!important;color:#cdd6f4!important;border-color:#45475a!important}
+            /* template <details> summary rows */
+            #as-settings-dlg.as-dark summary{background:#252535!important;color:#cdd6f4!important;border-color:#45475a!important}
+            /* template label spans inside summary — set explicitly so rebuildActiveSelector color changes don't cause low-contrast on dark */
+            #as-settings-dlg.as-dark summary span{color:#cdd6f4!important}
+            /* resume rows */
+            #as-settings-dlg.as-dark [data-resume-row]{background:#252535!important;border-color:#45475a!important;color:#cdd6f4!important}
+            /* rand delay section container */
+            #as-settings-dlg.as-dark [style*="background:#f8f8f8"]{background:#252535!important;border-color:#45475a!important}
+            /* template row background */
+            #as-settings-dlg.as-dark [style*="background:#f9f9f9"],
+            #as-settings-dlg.as-dark [style*="background:#fafafa"]{background:#252535!important}
+        `;
+        document.head.appendChild(s);
+    };
+
+    // Applies or removes dark theme. Called once on panel creation (restore
+    // saved preference) and on toggle button click (immediate visual feedback).
+    const applyTheme = (dark) => {
+        document.getElementById("as-panel")?.classList.toggle("as-dark", dark);
+        document.getElementById("as-settings-dlg")?.classList.toggle("as-dark", dark);
+        config.DARK_THEME = dark;
+        GM_setValue("darkTheme", dark);
+        dbg(`theme → ${dark ? "dark" : "light"}`);
+    };
+
     const setupDrag = (panel) => {
         const handle   = document.getElementById("as-drag-handle");
         const resetBtn = document.getElementById("as-reset-pos");
@@ -1088,7 +1175,7 @@
                         box-shadow:${isRunning ? "0 0 0 2px rgba(39,174,96,.25)" : "none"};
                         transition:background .3s,box-shadow .3s;">
                     </span>
-                    <span style="font-size:15px;font-weight:bold;color:#333;white-space:nowrap;">
+                    <span id="as-brand-span" style="font-size:15px;font-weight:bold;color:#333;white-space:nowrap;">
                         ⠿ ${BRAND} v${VERSION}
                     </span>
                     <!-- Mini sent counter: only visible when panel is collapsed -->
@@ -1148,12 +1235,12 @@
                 <!-- Counters ────────────────────────────────────────────── -->
                 <div style="margin-bottom:14px;font-size:13px;color:#444;
                     display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;text-align:center;">
-                    <div style="background:#f0fff4;border:1px solid #c3e6cb;
+                    <div class="as-cc" style="background:#f0fff4;border:1px solid #c3e6cb;
                         border-radius:6px;padding:6px 4px;">
                         ✅ Sent<br><b id="as-sent">${successCount}</b>
                     </div>
                     <!-- Clickable: opens skipped jobs popup -->
-                    <div id="as-complex-cell"
+                    <div id="as-complex-cell" class="as-cc"
                         style="background:#fff3cd;border:1px solid #ffc107;border-radius:6px;
                         padding:6px 4px;cursor:pointer;transition:background .15s;"
                         title="Click to view skipped jobs"
@@ -1164,7 +1251,7 @@
                             title="Jobs requiring a full form — skipped automatically.">?</span>
                         <br><b id="as-complex">${complexCount}</b>
                     </div>
-                    <div style="background:#e8f4fd;border:1px solid #bee5eb;
+                    <div class="as-cc" style="background:#e8f4fd;border:1px solid #bee5eb;
                         border-radius:6px;padding:6px 4px;">
                         🔖 Seen<br><b id="as-total">${processedIds.size}</b>
                     </div>
@@ -1254,6 +1341,8 @@
 
         setupDrag(panel);
         setupWindowControls(panel);
+        // Restore theme preference — runs once on page load, zero ongoing cost.
+        applyTheme(config.DARK_THEME);
         updateCounters();
         renderLog(); // replay any log lines emitted before the panel existed
     };
@@ -1540,6 +1629,7 @@
             "position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);" +
             "background:white;border-radius:12px;width:500px;max-height:85vh;" +
             "z-index:2147483649;display:flex;flex-direction:column;overflow:hidden;";
+        if (config.DARK_THEME) dialog.classList.add("as-dark");
 
         // ── Header ──────────────────────────────────────────────────────────
         const hdr = document.createElement("div");
@@ -1573,17 +1663,16 @@
             </div>
             <div id="as-resume-list" style="margin-bottom:16px;"></div>
 
-            <label style="font-size:13px;font-weight:bold;">Delay between responses (ms)</label>
-            <div style="font-size:11px;color:#888;margin:3px 0 6px;">
-                Min 1500 ms recommended. Lower = faster but higher bot-detection risk.
-                Disabled when randomization is on.
+            <div id="as-delay-section" style="display:${config.RAND_ENABLED ? "none" : "block"}">
+                <label style="font-size:13px;font-weight:bold;">Delay between responses (ms)</label>
+                <div style="font-size:11px;color:#888;margin:3px 0 6px;">
+                    Min 1500 ms recommended. Lower = faster but higher bot-detection risk.
+                </div>
+                <input id="as-delay-inp" type="number" value="${config.DELAY_MS}"
+                    min="1500" max="15000"
+                    style="width:100%;padding:8px;margin-bottom:16px;border:1px solid #ccc;
+                    border-radius:6px;box-sizing:border-box;font-size:13px;">
             </div>
-            <input id="as-delay-inp" type="number" value="${config.DELAY_MS}"
-                min="1500" max="15000"
-                ${config.RAND_ENABLED ? "disabled" : ""}
-                style="width:100%;padding:8px;margin-bottom:16px;border:1px solid #ccc;
-                border-radius:6px;box-sizing:border-box;font-size:13px;
-                ${config.RAND_ENABLED ? "opacity:0.45;" : ""}">
 
             <!-- Randomized delay ──────────────────────────────────────────── -->
             <div style="background:#f8f8f8;border:1px solid #e0e0e0;border-radius:8px;
@@ -1673,6 +1762,12 @@
         footer.style.cssText =
             "padding:14px 24px;border-top:1px solid #eee;display:flex;gap:10px;flex-shrink:0;";
         footer.innerHTML = `
+            <button id="as-theme-btn"
+                style="padding:12px 14px;background:#f0f0f0;border:1px solid #ccc;
+                border-radius:6px;cursor:pointer;font-size:14px;white-space:nowrap;"
+                title="Toggle dark / light theme">
+                ${config.DARK_THEME ? "☀️" : "🌙"}
+            </button>
             <button id="as-save-set"
                 style="flex:1;padding:12px;background:#ee7f2d;color:white;border:none;
                 border-radius:6px;font-weight:bold;cursor:pointer;font-size:14px;">
@@ -1686,6 +1781,13 @@
 
         dialog.append(hdr, bodyEl, footer);
         document.body.append(overlay, dialog);
+
+        // Theme toggle — takes effect immediately, independent of Save/Cancel.
+        dialog.querySelector("#as-theme-btn").onclick = function() {
+            const dark = !config.DARK_THEME;
+            applyTheme(dark);
+            this.textContent = dark ? "☀️" : "🌙";
+        };
 
         // Working copies scoped to this dialog session.
         // We work on copies so Cancel truly discards all changes.
@@ -1756,17 +1858,16 @@
         // ── Randomization checkbox interactivity ────────────────────────────
         // Toggling the checkbox shows/hides min+max fields and enables/disables
         // the fixed delay input. No save is triggered — user must click Save.
-        const randChk    = dialog.querySelector("#as-rand-chk");
-        const randFields = dialog.querySelector("#as-rand-fields");
-        const delayInp   = dialog.querySelector("#as-delay-inp");
-        const randErr    = dialog.querySelector("#as-rand-err");
+        const randChk      = dialog.querySelector("#as-rand-chk");
+        const randFields   = dialog.querySelector("#as-rand-fields");
+        const delaySection = dialog.querySelector("#as-delay-section");
+        const randErr      = dialog.querySelector("#as-rand-err");
 
         randChk.addEventListener("change", () => {
             const on = randChk.checked;
-            randFields.style.display  = on ? "flex" : "none";
-            delayInp.disabled         = on;
-            delayInp.style.opacity    = on ? "0.45" : "1";
-            randErr.style.display     = "none";
+            delaySection.style.display = on ? "none" : "block";
+            randFields.style.display   = on ? "flex"  : "none";
+            if (randErr) randErr.style.display = "none";
         });
 
         const refreshAddBtn = () => {
@@ -1836,10 +1937,10 @@
                     })
                 );
 
-                // ── Delay ────────────────────────────────────────────────────
+                // Fixed delay — read even if the section is hidden (rand may be off next time)
                 config.DELAY_MS = Math.max(
                     1500,
-                    parseInt(dialog.querySelector("#as-delay-inp").value) || 3000
+                    parseInt(dialog.querySelector("#as-delay-inp")?.value) || 3000
                 );
 
                 // ── Randomized delay ─────────────────────────────────────────
@@ -2164,28 +2265,19 @@
     // form itself. Everything is logged so failures are visible.
 
     const maybeAutoResume = () => {
-        log(`🗺 Resume check — isRunning:${isRunning}`);
-        log(`   current : ${location.href.slice(0, 100)}`);
-
-        if (!isRunning) { log("💤 Nothing to resume"); return; }
-
+        if (!isRunning) return;
         if (location.pathname.includes("/vacancy_response")) {
-            log("⏳ Still on complex page — waiting for navigation");
+            log("⏳ On complex page — waiting for back-nav");
             return;
         }
-        if (!location.hostname.includes("hh.ru")) {
-            log("⚠️ Not on hh.ru — skipping resume");
-            return;
-        }
+        if (!location.hostname.includes("hh.ru")) return;
 
-        log("♻️ Auto-resuming (hard-nav cycle)");
-
+        log("♻️ Auto-resuming");
         if (elCache.toggleBtn) {
             elCache.toggleBtn.textContent      = "⏹️ STOP";
             elCache.toggleBtn.style.background = "#d9534f";
         }
         if (elCache.log) elCache.log.style.display = "block";
-
         startTabIndicator();
         startProcessing();
     };
@@ -2203,20 +2295,18 @@
 
     const init = () => {
         if (document.getElementById("as-panel")) return;
-        createPanel();
-
-        // Focus guard — warn user when they try to leave the tab while running
-        setupFocusGuard();
-
-        // Visited highlighting — inject CSS once and apply to already-known IDs
-        _injectVisitedCSS();
-        // Delay slightly so hh.ru's React has rendered the vacancy cards
+        const step = (name, fn) => {
+            try { fn(); }
+            catch (e) { log(`❌ Init failed [${name}]: ${e.message}`); }
+        };
+        step("injectThemeCSS",    _injectThemeCSS);
+        step("createPanel",       createPanel);
+        step("setupFocusGuard",   setupFocusGuard);
+        step("injectVisitedCSS",  _injectVisitedCSS);
         setTimeout(() => {
-            applyVisitedStyles();
-            setupVisitedObserver(); // re-apply on lazy-load scroll
+            step("applyVisitedStyles",  applyVisitedStyles);
+            step("setupVisitedObserver", setupVisitedObserver);
         }, 1200);
-
-        // 800 ms: lets hh.ru's React SPA settle its URL before we read it.
         setTimeout(maybeAutoResume, 800);
     };
 
@@ -2224,19 +2314,10 @@
     setTimeout(init, 2500);
     setTimeout(init, 5000);
 
-    // One-shot MutationObserver — catches very early body population.
-    // Disconnects as soon as the panel is in the DOM to avoid re-triggering
-    // on every subsequent SPA DOM mutation.
     const obs = new MutationObserver(() => {
         if (document.getElementById("as-panel")) { obs.disconnect(); return; }
         init();
     });
     obs.observe(document.body, { childList: true, subtree: false });
-
-    log(`${BRAND} v${VERSION} — ${location.pathname}`);
-    log(`   isRunning:${isRunning}  sent:${successCount}  skipped:${complexCount}  seen:${processedIds.size}`);
-    log(`   resumes:${config.RESUMES.length}  active:"${config.RESUME_ID?.slice(0,14) ?? "none"}"`);
-    log(`   delay:${config.DELAY_MS}ms${config.RAND_ENABLED ? ` rand[${config.RAND_MIN}–${config.RAND_MAX}]` : ""}  templates:${coverTemplates.length}${config.TMPL_RANDOM ? " (random)" : ""}`);
-    if (originalSearchUrl) log(`   searchURL: ${originalSearchUrl.slice(0, 80)}`);
 
 })();
