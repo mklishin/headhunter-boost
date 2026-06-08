@@ -2,7 +2,7 @@
 // @name         HeadHunter Boost
 // @name:ru      HeadHunter Boost
 // @namespace    https://github.com/mklishin/headhunter-boost
-// @version      6.1
+// @version      6.4
 // @description  Автоматическая отправка откликов на hh.ru — шаблоны писем, пропуск сложных вакансий, человекоподобное поведение
 // @description:ru  Автоматическая отправка откликов на hh.ru — шаблоны писем, пропуск сложных вакансий, человекоподобное поведение
 // @description:en  Auto-apply to jobs on hh.ru — cover letter templates, smart skipping, human-like interaction
@@ -22,7 +22,89 @@
 (() => {
     'use strict';
 
-    const VERSION = "6.1";
+    // ── ANTI-DETECTION ────────────────────────────────────────────────────────
+    // Prevent hh.ru from detecting tab-switch, blocking text selection/copy,
+    // or blocking context menu. Runs before any hh.ru JS gets a chance to register.
+    (() => {
+        // Tab-switch detection events — blocked site-wide on hh.ru
+        const BLOCK_TRACKING = new Set([
+            'visibilitychange', 'webkitvisibilitychange', 'blur', 'beforeunload'
+        ]);
+
+        // Events hh.ru uses to block user actions — we stop them from registering
+        // EXCEPT on editable fields (inputs/textareas need their own handlers)
+        const BLOCK_RESTRICTIONS = new Set([
+            'selectstart', 'dragstart', 'contextmenu', 'cut', 'copy', 'paste'
+        ]);
+
+        const isEditable = el => el && (
+            el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' ||
+            el.tagName === 'SELECT' || el.isContentEditable
+        );
+
+        // 1. Override addEventListener: drop tracking events unconditionally,
+        //    drop restriction events only when target is not an editable field
+        const _add = EventTarget.prototype.addEventListener;
+        EventTarget.prototype.addEventListener = function(type, fn, opts) {
+            const t = type.toLowerCase();
+            if (BLOCK_TRACKING.has(t)) return;
+            if (BLOCK_RESTRICTIONS.has(t) && !isEditable(this)) return;
+            return _add.call(this, type, fn, opts);
+        };
+
+        // 2. Mirror removeEventListener for API symmetry
+        const _rem = EventTarget.prototype.removeEventListener;
+        EventTarget.prototype.removeEventListener = function(type, fn, opts) {
+            const t = type.toLowerCase();
+            if (BLOCK_TRACKING.has(t)) return;
+            if (BLOCK_RESTRICTIONS.has(t) && !isEditable(this)) return;
+            return _rem.call(this, type, fn, opts);
+        };
+
+        // 3. Capture-phase stoppers — use _add.call() directly so our own
+        //    override doesn't silently drop these registrations
+        for (const ev of BLOCK_TRACKING) {
+            _add.call(window, ev, e => e.stopImmediatePropagation(), true);
+        }
+        for (const ev of BLOCK_RESTRICTIONS) {
+            _add.call(window, ev, e => {
+                if (!isEditable(e.target)) e.stopImmediatePropagation();
+            }, true);
+        }
+
+        // 4. Spoof visibilityState — hh.ru always sees tab as active
+        try {
+            Object.defineProperty(document, 'visibilityState', { get: () => 'visible' });
+            Object.defineProperty(document, 'hidden',          { get: () => false });
+        } catch { /* protected property — browser won't allow redefine */ }
+
+        // 5. CSS: force text selection everywhere
+        const s = document.createElement('style');
+        s.textContent = `*{-webkit-user-select:text!important;user-select:text!important}`;
+        (document.head || document.documentElement).appendChild(s);
+
+        // 6. Strip inline oncopy/oncontextmenu/onselectstart attributes hh.ru
+        //    may set on elements after render. Use _add.call for DOMContentLoaded
+        //    so our override doesn't interfere.
+        const INLINE = ['oncopy','oncut','onpaste','oncontextmenu','onselectstart','ondragstart'];
+        const nuke = root => {
+            for (const el of (root.querySelectorAll?.('*') ?? [])) {
+                for (const a of INLINE) {
+                    if (el.hasAttribute(a)) el.removeAttribute(a);
+                    if (el[a]) el[a] = null;
+                }
+            }
+        };
+        _add.call(document, 'DOMContentLoaded', () => nuke(document));
+        new MutationObserver(ms => {
+            for (const m of ms)
+                for (const n of m.addedNodes)
+                    if (n.nodeType === 1) nuke(n);
+        }).observe(document.documentElement, { childList: true, subtree: true });
+    })();
+    // ─────────────────────────────────────────────────────────────────────────
+
+    const VERSION = "6.4";
     const BRAND   = "HeadHunter Boost";
 
     // Shown in Settings. User can edit, add (up to 5), or delete.
@@ -465,73 +547,6 @@
         }
     };
 
-    // When the script is running and the tab loses focus (user switches away or
-    // the window is blurred), an overlay warning appears on top of the page so
-    // it is the first thing the user sees when they return.
-    //
-    // Why not beforeunload: that event would also fire on our own
-    // window.location.href = originalSearchUrl back-navigation, showing the
-    // browser's native "Leave site?" prompt and breaking the auto-resume cycle.
-    //
-    // The overlay is pure informational — it cannot prevent a tab switch but
-    // clearly signals the risk of leaving.
-
-    const _showFocusWarning = () => {
-        if (!isRunning) return;
-        if (document.getElementById("as-focus-warn")) return; // already visible
-
-        const overlay = document.createElement("div");
-        overlay.id = "as-focus-warn";
-        overlay.style.cssText =
-            "position:fixed;inset:0;background:rgba(0,0,0,.78);z-index:2147483647;" +
-            "display:flex;align-items:center;justify-content:center;";
-
-        const box = document.createElement("div");
-        box.style.cssText =
-            "background:#fff;border-radius:14px;padding:36px 40px;max-width:420px;" +
-            "text-align:center;font-family:system-ui;box-shadow:0 24px 60px rgba(0,0,0,.45);";
-        box.innerHTML = `
-            <div style="font-size:52px;margin-bottom:14px;">⚠️</div>
-            <h2 style="margin:0 0 12px;font-size:20px;color:#c0392b;">Скрипт работает!</h2>
-            <p style="margin:0 0 18px;font-size:15px;color:#444;line-height:1.65;">
-                HeadHunter Boost отправляет отклики в этой вкладке.<br>
-                Если убрать фокус с вкладки — скрипт прервётся.
-            </p>
-            <p style="margin:0 0 26px;font-size:13px;color:#999;">
-                Откройте другие задачи в соседнем окне, а не в другой вкладке браузера.
-            </p>
-            <button id="as-focus-ok"
-                style="padding:12px 36px;background:#ee7f2d;color:#fff;border:none;
-                border-radius:8px;cursor:pointer;font-size:15px;font-weight:bold;
-                box-shadow:0 4px 12px rgba(238,127,45,.4);">
-                Понятно, остаюсь здесь
-            </button>`;
-
-        overlay.appendChild(box);
-        document.body.appendChild(overlay);
-
-        const dismiss = () => overlay.remove();
-        box.querySelector("#as-focus-ok").onclick = dismiss;
-        // Also dismiss when the user switches back and the tab becomes visible
-        const onVisible = () => {
-            if (!document.hidden) { dismiss(); document.removeEventListener("visibilitychange", onVisible); }
-        };
-        document.addEventListener("visibilitychange", onVisible);
-    };
-
-    const setupFocusGuard = () => {
-        // visibilitychange covers tab switching in most browsers
-        document.addEventListener("visibilitychange", () => {
-            if (document.hidden) _showFocusWarning();
-        });
-        // blur covers: switching to another app, clicking outside the browser
-        window.addEventListener("blur", _showFocusWarning);
-        // Dismiss when focus returns
-        window.addEventListener("focus", () => {
-            document.getElementById("as-focus-warn")?.remove();
-        });
-    };
-
     // Visually marks vacancy cards on the search page that have already been
     // processed (applied or skipped). Updated after each vacancy is handled
     // and on page load.
@@ -551,59 +566,20 @@
         const s = document.createElement("style");
         s.id = "as-visited-css";
         s.textContent = `
-            /*
-             * HeadHunter Boost — visited vacancy highlighting.
-             * inset box-shadow is used as the primary visual signal instead of
-             * background-color because hh.ru's magritte class selectors often
-             * win the specificity battle even against [attr] selectors with
-             * !important. box-shadow is an additive property that doesn't
-             * conflict with hh.ru's own shadows.
-             */
-
-            /* Applied — green left accent bar */
-            [data-qa="vacancy-serp__vacancy"][data-hhb="applied"] {
-                box-shadow: inset 3px 0 0 #27ae60 !important;
-                opacity: 0.82 !important;
-                transition: opacity .25s !important;
-            }
-
-            /* Skipped — grey left accent bar */
-            [data-qa="vacancy-serp__vacancy"][data-hhb="skipped"] {
-                box-shadow: inset 3px 0 0 #adb5bd !important;
-                opacity: 0.70 !important;
-                transition: opacity .25s !important;
-            }
-
-            /* position:relative is required for the absolute badge */
-            [data-qa="vacancy-serp__vacancy"][data-hhb] {
-                position: relative !important;
-            }
-
-            /* Badge shared base */
             .as-visited-badge {
                 position: absolute;
-                top: 8px;
-                right: 10px;
-                font-size: 10px;
-                font-weight: 700;
-                padding: 2px 7px;
-                border-radius: 20px;
+                top: 8px; right: 10px;
+                font-size: 10px; font-weight: 700;
+                padding: 2px 7px; border-radius: 20px;
                 font-family: system-ui, sans-serif;
-                pointer-events: none;
-                z-index: 50;
-                letter-spacing: .15px;
-                line-height: 1.6;
-                white-space: nowrap;
+                pointer-events: none; z-index: 9999;
+                white-space: nowrap; line-height: 1.6;
             }
             .as-visited-badge.applied {
-                background: rgba(39, 174, 96, 0.15);
-                color: #1a6b3c;
-                border: 1px solid rgba(39, 174, 96, 0.35);
+                background: #27ae60; color: #fff;
             }
             .as-visited-badge.skipped {
-                background: rgba(108, 117, 125, 0.12);
-                color: #555;
-                border: 1px solid rgba(108, 117, 125, 0.28);
+                background: #868e96; color: #fff;
             }
         `;
         document.head.appendChild(s);
@@ -616,49 +592,74 @@
         requestAnimationFrame(() => {
             _visitedPending = false;
             const skipped = new Set(complexJobs.map(j => j.id).filter(Boolean));
-            document.querySelectorAll('[data-qa="vacancy-serp__vacancy"]').forEach(card => {
-                const m = card.querySelector('[data-qa="serp-item__title"]')?.href?.match(/\/vacancy\/(\d+)/);
+
+            // Try both known card selectors — hh.ru changes markup periodically
+            const cards = document.querySelectorAll(
+                '[data-qa="vacancy-serp__vacancy"], [class*="serp-item"][class*="vacancy"]'
+            );
+
+            cards.forEach(card => {
+                // Extract vacancy ID from title anchor href
+                const link = card.querySelector('[data-qa="serp-item__title"]') ||
+                             card.querySelector('a[href*="/vacancy/"]');
+                const m = link?.href?.match(/\/vacancy\/(\d+)/);
                 if (!m) return;
+
                 const vid = m[1];
                 if (!processedIds.has(vid)) return;
                 const status = skipped.has(vid) ? "skipped" : "applied";
-                if (card.dataset.hhb === status) return;
+                if (card.dataset.hhb === status) return;  // already painted
                 card.dataset.hhb = status;
 
-                const bg    = status === "applied" ? "rgba(39,174,96,0.13)" : "rgba(130,130,145,0.11)";
-                const outln = status === "applied" ? "2px solid rgba(39,174,96,0.55)" : "2px solid rgba(130,130,145,0.40)";
+                const color = status === "applied"
+                    ? "rgba(39,174,96,0.18)"
+                    : "rgba(108,117,125,0.13)";
+                const border = status === "applied"
+                    ? "2px solid rgba(39,174,96,0.7)"
+                    : "2px solid rgba(108,117,125,0.5)";
 
-                // Paint the card root AND its first child div (hh.ru magritte wraps
-                // card content in a child div whose own background would cover the root).
-                // outline is always visible on top of any background.
-                card.style.setProperty("background-color", bg, "important");
-                card.style.setProperty("outline", outln, "important");
-                card.style.setProperty("outline-offset", "-2px", "important");
-                card.style.setProperty("position", "relative", "important");
-                const inner = card.querySelector(":scope > div");
-                if (inner) inner.style.setProperty("background-color", bg, "important");
+                // Paint card root + every direct child div with setProperty "important"
+                // This beats any CSS rule including hh.ru magritte inline styles
+                const paint = el => {
+                    el.style.setProperty("background-color", color, "important");
+                    el.style.setProperty("outline", border, "important");
+                    el.style.setProperty("outline-offset", "-2px", "important");
+                    el.style.setProperty("position", "relative", "important");
+                };
+                paint(card);
+                card.querySelectorAll(":scope > div, :scope > div > div").forEach(paint);
 
+                // Badge — remove stale one first
                 card.querySelector(".as-visited-badge")?.remove();
                 const badge = document.createElement("div");
                 badge.className   = `as-visited-badge ${status}`;
                 badge.textContent = status === "applied" ? "✓ Отклик" : "⏩ Пропущено";
-                card.appendChild(badge);
+                // Insert into card — find a positioned ancestor for correct stacking
+                const host = card.querySelector('[class*="vacancy-card"], :scope > div') || card;
+                host.style.setProperty("position", "relative", "important");
+                host.appendChild(badge);
             });
         });
     };
 
+    // Throttled MutationObserver — subtree:true catches lazy-loaded cards anywhere
+    // in the list; throttle prevents RAF-storm on hh.ru's frequent micro-mutations
     let _visitedObserver = null;
+    let _visitedThrottle = null;
     const setupVisitedObserver = () => {
         if (_visitedObserver) return;
         const target =
             document.querySelector('[data-qa="vacancy-serp-list"]') ||
-            document.querySelector('[class*="vacancy-serp"]') ||
+            document.querySelector('[class*="serp"]') ||
             document.body;
-        // childList:true subtree:false — only fires when direct children change
-        // (new card rows appended on scroll). subtree:true would fire on every
-        // attribute/text mutation inside all cards, which is very expensive.
-        _visitedObserver = new MutationObserver(applyVisitedStyles);
-        _visitedObserver.observe(target, { childList: true, subtree: false });
+        _visitedObserver = new MutationObserver(() => {
+            if (_visitedThrottle) return;
+            _visitedThrottle = setTimeout(() => {
+                _visitedThrottle = null;
+                applyVisitedStyles();
+            }, 400);
+        });
+        _visitedObserver.observe(target, { childList: true, subtree: true });
     };
 
     // Selectors confirmed from live hh.ru HTML (May 2025):
@@ -2301,7 +2302,6 @@
         };
         step("injectThemeCSS",    _injectThemeCSS);
         step("createPanel",       createPanel);
-        step("setupFocusGuard",   setupFocusGuard);
         step("injectVisitedCSS",  _injectVisitedCSS);
         setTimeout(() => {
             step("applyVisitedStyles",  applyVisitedStyles);
