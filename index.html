@@ -1,754 +1,336 @@
 <!DOCTYPE html>
 <html lang="ru">
 <head>
-<meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HeadHunter Boost — автоматические отклики на hh.ru</title>
+    <meta name="description" content="Tampermonkey-скрипт для автоматической отправки откликов на hh.ru. Шаблоны писем, умный пропуск сложных вакансий, тёмная тема.">
+    <style>
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-<title>HeadHunter Boost — бесплатный автоотклик на hh.ru | Tampermonkey скрипт</title>
-<meta name="description" content="Бесплатный Tampermonkey-скрипт для массовых откликов на hh.ru. Работает без API — не сломался в декабре 2025. Автоматически нажимает «Откликнуться», подставляет сопроводительное письмо. Без регистрации, без Node.js." />
-<meta name="keywords" content="автоотклик hh.ru, массовые отклики headhunter, расширение для откликов hh, рассылка откликов hh бесплатно, бот для откликов hh, автоматизация поиска работы, сопроводительное письмо автоматически, tampermonkey скрипт hh, userscript автоотклик headhunter, автоматические отклики без API, ускорить отклики hh бесплатно, скрипт поиска работы" />
-<link rel="canonical" href="https://mklishin.github.io/headhunter-boost/" />
-<link rel="author" href="https://mklishin.github.io/" />
+        :root {
+            --orange:  #ee7f2d;
+            --orange2: #d96a1a;
+            --dark:    #1e1e2e;
+            --text:    #333;
+            --sub:     #666;
+            --border:  #e8e8e8;
+            --bg:      #fafafa;
+            --card:    #fff;
+            --radius:  10px;
+        }
 
-<!-- Favicon SVG (inline, no external file needed) -->
-<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%23e03d00'/><polygon points='18.6,2.5 10.2,15.4 16.6,15.4 9,29.5 21.8,16.6 15.4,16.6 23,2.5' fill='white'/></svg>" />
-<link rel="icon" type="image/x-icon" href="favicon.ico" />
-<link rel="apple-touch-icon" sizes="180x180" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%23e03d00'/><polygon points='18.6,2.5 10.2,15.4 16.6,15.4 9,29.5 21.8,16.6 15.4,16.6 23,2.5' fill='white'/></svg>" />
-<meta name="theme-color" content="#e03d00" />
+        body {
+            font-family: system-ui, -apple-system, sans-serif;
+            color: var(--text);
+            background: var(--bg);
+            line-height: 1.6;
+        }
 
-<meta name="yandex-verification" content="519153342e3e0c27" />
+        /* ── Hero ────────────────────────────────────────────────────────── */
+        .hero {
+            background: linear-gradient(135deg, var(--dark) 0%, #2a2a42 100%);
+            color: #fff;
+            text-align: center;
+            padding: 72px 20px 60px;
+        }
+        .hero-icon { font-size: 56px; margin-bottom: 16px; }
+        .hero h1 { font-size: clamp(28px, 5vw, 42px); font-weight: 800; margin-bottom: 12px; }
+        .hero p  { font-size: clamp(15px, 2.5vw, 18px); color: #a6adc8; max-width: 580px; margin: 0 auto 32px; }
 
-<!-- Open Graph -->
-<meta property="og:type" content="website" />
-<meta property="og:title" content="HeadHunter Boost — бесплатный автоотклик на hh.ru" />
-<meta property="og:description" content="Tampermonkey-скрипт для массовых откликов на hh.ru. Работает без API. Без регистрации, без Node.js." />
-<meta property="og:url" content="https://mklishin.github.io/headhunter-boost/" />
-<meta property="og:image" content="https://raw.githubusercontent.com/mklishin/headhunter-boost/main/main.jpg" />
-<meta property="og:image:alt" content="Панель управления HeadHunter Boost на странице поиска вакансий hh.ru" />
-<meta property="og:image:width" content="1280" />
-<meta property="og:image:height" content="640" />
-<meta property="og:locale" content="ru_RU" />
-<meta property="og:site_name" content="HeadHunter Boost" />
+        .btn {
+            display: inline-block;
+            padding: 14px 32px;
+            background: var(--orange);
+            color: #fff;
+            border-radius: 8px;
+            text-decoration: none;
+            font-weight: 700;
+            font-size: 16px;
+            transition: background .2s;
+        }
+        .btn:hover { background: var(--orange2); }
+        .btn-ghost {
+            background: transparent;
+            border: 2px solid rgba(255,255,255,.35);
+            margin-left: 12px;
+        }
+        .btn-ghost:hover { background: rgba(255,255,255,.08); }
 
-<!-- Twitter Card -->
-<meta name="twitter:card" content="summary_large_image" />
-<meta name="twitter:title" content="HeadHunter Boost — бесплатный автоотклик на hh.ru" />
-<meta name="twitter:description" content="Tampermonkey-скрипт для массовых откликов. Работает без API. Без программирования, без регистрации." />
-<meta name="twitter:image" content="https://raw.githubusercontent.com/mklishin/headhunter-boost/main/main.jpg" />
+        .badges { margin-top: 28px; display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+        .badges img { height: 20px; }
 
-<link rel="preconnect" href="https://fonts.googleapis.com" />
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<link href="https://fonts.googleapis.com/css2?family=Unbounded:wght@800&family=Geologica:wght@300;400;500;600&display=swap" rel="stylesheet" />
+        /* ── Layout ──────────────────────────────────────────────────────── */
+        .container { max-width: 960px; margin: 0 auto; padding: 0 20px; }
 
-<!-- Schema: SoftwareApplication -->
-<script type="application/ld+json">
-{
-  "@context": "https://schema.org",
-  "@type": "SoftwareApplication",
-  "name": "HeadHunter Boost",
-  "alternateName": [
-    "hh.ru автоотклик", "headhunter автоматические отклики",
-    "массовые отклики hh", "расширение для откликов hh",
-    "бот для откликов headhunter", "auto apply hh.ru userscript"
-  ],
-  "description": "Tampermonkey-скрипт для массовой автоматизации откликов на hh.ru. Работает через браузер без API — не сломался в декабре 2025. До 5 шаблонов сопроводительного письма, рандомизация задержек, пропуск вакансий с тестами. Бесплатно, без Node.js.",
-  "url": "https://mklishin.github.io/headhunter-boost/",
-  "downloadUrl": "https://raw.githubusercontent.com/mklishin/headhunter-boost/main/headhunter-boost.user.js",
-  "applicationCategory": "UtilitiesApplication",
-  "operatingSystem": ["Windows", "macOS", "Linux"],
-  "browserRequirements": "Requires Tampermonkey (Chrome, Firefox, Edge, Opera, Yandex Browser)",
-  "softwareVersion": "6.1",
-  "author": {
-    "@type": "Person",
-    "name": "Михаил Клишин",
-    "url": "https://mklishin.github.io/",
-    "jobTitle": "Product Manager",
-    "image": "https://github.com/mklishin.png",
-    "sameAs": ["https://mklishin.github.io/", "https://github.com/mklishin"]
-  },
-  "license": "https://opensource.org/licenses/MIT",
-  "offers": { "@type": "Offer", "price": "0", "priceCurrency": "RUB", "availability": "https://schema.org/InStock" },
-  "isAccessibleForFree": true,
-  "codeRepository": "https://github.com/mklishin/headhunter-boost",
-  "programmingLanguage": "JavaScript",
-  "screenshot": [
-    { "@type": "ImageObject", "url": "https://raw.githubusercontent.com/mklishin/headhunter-boost/main/main.jpg", "caption": "Главная панель управления HeadHunter Boost" },
-    { "@type": "ImageObject", "url": "https://raw.githubusercontent.com/mklishin/headhunter-boost/main/settings.jpg", "caption": "Настройки: шаблоны письма, Resume ID, задержка" }
-  ],
-  "featureList": [
-    "Автоматическая отправка откликов на hh.ru без API",
-    "До 5 шаблонов сопроводительного письма с подстановкой {JOB_TITLE}",
-    "Рандомизация задержки по гауссову распределению",
-    "Пропуск вакансий с тестами и сохранение в список",
-    "Автостоп при достижении суточного лимита (200 откликов)",
-    "Журнал событий и счётчики в реальном времени"
-  ]
-}
-</script>
+        section { padding: 64px 0; }
+        section + section { border-top: 1px solid var(--border); }
 
-<!-- Schema: FAQPage -->
-<script type="application/ld+json">
-{
-  "@context": "https://schema.org",
-  "@type": "FAQPage",
-  "mainEntity": [
-    { "@type": "Question", "name": "Как работает автоотклик на hh.ru?",
-      "acceptedAnswer": { "@type": "Answer", "text": "HeadHunter Boost — userscript для Tampermonkey. Скрипт автоматически находит все кнопки «Откликнуться» на странице поиска, подставляет шаблон сопроводительного письма (с заменой {JOB_TITLE} на название вакансии) и отправляет отклик. Вакансии с тестами пропускаются и сохраняются в список со ссылками." }
-    },
-    { "@type": "Question", "name": "Почему скрипт работает, когда другие инструменты автоотклика сломались?",
-      "acceptedAnswer": { "@type": "Answer", "text": "В декабре 2025 hh.ru заблокировал API-доступ — это сломало большинство расширений и ботов, работавших через API. HeadHunter Boost не использует API: скрипт управляет браузером напрямую, нажимая кнопки как обычный пользователь, поэтому он продолжает работать." }
-    },
-    { "@type": "Question", "name": "Сколько откликов можно отправить в день?",
-      "acceptedAnswer": { "@type": "Answer", "text": "hh.ru устанавливает лимит до 200 откликов в сутки. HeadHunter Boost автоматически останавливается при достижении лимита и показывает уведомление." }
-    },
-    { "@type": "Question", "name": "Нужно ли устанавливать Node.js или другие программы?",
-      "acceptedAnswer": { "@type": "Answer", "text": "Нет. Скрипт работает прямо в браузере через Tampermonkey. Установка Python, редактирование кода и регистрация аккаунтов не требуются." }
-    },
-    { "@type": "Question", "name": "В каких браузерах работает автоотклик?",
-      "acceptedAnswer": { "@type": "Answer", "text": "Chrome, Firefox, Edge, Opera и Яндекс Браузер — любой браузер с расширением Tampermonkey, Violentmonkey или Greasemonkey. Протестирован на Windows, macOS, Linux." }
-    },
-    { "@type": "Question", "name": "Безопасно ли использовать автоотклик на hh.ru?",
-      "acceptedAnswer": { "@type": "Answer", "text": "Скрипт работает только в вашем браузере и не передаёт данные третьим лицам. Исходный код открыт на GitHub. Перед запуском скрипта рекомендуется сначала "прогреть" сессию в браузере и несколько минут пользоваться сайтом самостоятельно " }
-    },
-    { "@type": "Question", "name": "Почему это бесплатно?",
-      "acceptedAnswer": { "@type": "Answer", "text": "Никто не оказывает услуги — ваш браузер просто нажимает кнопки вместо вас." }
-    }
-  ]
-}
-</script>
+        h2 {
+            font-size: clamp(20px, 3vw, 26px);
+            font-weight: 700;
+            margin-bottom: 32px;
+            color: var(--dark);
+        }
 
-<!-- Schema: Person — author, promotes mklishin.github.io -->
-<script type="application/ld+json">
-{
-  "@context": "https://schema.org",
-  "@type": "Person",
-  "name": "Михаил Клишин",
-  "url": "https://mklishin.github.io/",
-  "image": "https://github.com/mklishin.png",
-  "jobTitle": "Product Manager",
-  "description": "Product Manager с опытом в Avito, VK и других продуктовых компаниях.",
-  "knowsAbout": ["Product Management", "JavaScript", "Browser Automation", "Вайбкодинг", "hh.ru", "Job Search", "HRtech"],
-  "sameAs": ["https://mklishin.github.io/", "https://github.com/mklishin"]
-}
-</script>
+        /* ── Feature grid ────────────────────────────────────────────────── */
+        .features {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+            gap: 20px;
+        }
+        .feature {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 22px 20px;
+        }
+        .feature-icon { font-size: 26px; margin-bottom: 10px; }
+        .feature h3   { font-size: 15px; font-weight: 700; margin-bottom: 6px; }
+        .feature p    { font-size: 13px; color: var(--sub); }
 
-<style>
-  :root {
-    --bg: #f4f3ee;
-    --surface: #ffffff;
-    --accent: #e03d00;
-    --accent-h: #bf3200;
-    --accent-soft: #fff0eb;
-    --text: #191816;
-    --muted: #6e6b64;
-    --border: #dedad1;
-    --radius: 12px;
-    --radius-sm: 8px;
-  }
+        /* ── Steps ───────────────────────────────────────────────────────── */
+        .steps { counter-reset: step; display: flex; flex-direction: column; gap: 20px; }
+        .step  {
+            display: flex; gap: 18px; align-items: flex-start;
+            background: var(--card); border: 1px solid var(--border);
+            border-radius: var(--radius); padding: 20px;
+        }
+        .step::before {
+            counter-increment: step;
+            content: counter(step);
+            min-width: 34px; height: 34px;
+            background: var(--orange); color: #fff;
+            border-radius: 50%;
+            display: flex; align-items: center; justify-content: center;
+            font-weight: 800; font-size: 15px; flex-shrink: 0;
+        }
+        .step h3 { font-size: 15px; font-weight: 700; margin-bottom: 4px; }
+        .step p  { font-size: 13px; color: var(--sub); }
+        .step code {
+            background: #f0f0f0; padding: 2px 6px; border-radius: 4px;
+            font-size: 12px; font-family: monospace; word-break: break-all;
+        }
 
-  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-  html { scroll-behavior: smooth; }
-  body {
-    font-family: 'Geologica', sans-serif;
-    background: var(--bg); color: var(--text);
-    font-size: 16px; line-height: 1.65;
-    -webkit-font-smoothing: antialiased;
-  }
+        /* ── Install box ─────────────────────────────────────────────────── */
+        .install-box {
+            background: var(--dark); color: #cdd6f4;
+            border-radius: var(--radius);
+            padding: 20px 24px;
+            font-family: monospace; font-size: 13px;
+            display: flex; align-items: center; justify-content: space-between;
+            gap: 12px; flex-wrap: wrap;
+        }
+        .install-url { word-break: break-all; flex: 1; }
+        .copy-btn {
+            padding: 8px 14px; background: var(--orange);
+            border: none; border-radius: 6px; color: #fff;
+            cursor: pointer; font-size: 12px; font-weight: 700;
+            white-space: nowrap; transition: background .2s;
+        }
+        .copy-btn:hover { background: var(--orange2); }
 
-  /* ── NAV ── */
-  nav {
-    position: sticky; top: 0; z-index: 100;
-    background: rgba(244,243,238,0.92);
-    backdrop-filter: blur(14px);
-    border-bottom: 1px solid var(--border);
-    padding: 0 clamp(1rem,5vw,3rem);
-    height: 56px;
-    display: flex; align-items: center; justify-content: space-between;
-  }
-  .nav-logo {
-    font-family: 'Unbounded', sans-serif;
-    font-size: 13px; font-weight: 800;
-    letter-spacing: -0.02em; color: var(--text);
-    text-decoration: none;
-    display: flex; align-items: center; gap: 8px;
-  }
-  .nav-logo-icon {
-    width: 26px; height: 26px; border-radius: 6px;
-    background: var(--accent);
-    display: flex; align-items: center; justify-content: center;
-    flex-shrink: 0;
-  }
-  .nav-links { display: flex; gap: 1.5rem; align-items: center; }
-  .nav-links a {
-    font-size: 14px; font-weight: 500; color: var(--muted);
-    text-decoration: none; transition: color .15s;
-  }
-  .nav-links a:hover { color: var(--text); }
-  .nav-cta {
-    background: var(--text) !important; color: #fff !important;
-    padding: 6px 16px; border-radius: 99px;
-  }
-  .nav-cta:hover { background: var(--accent) !important; }
-  .nav-burger {
-    display: none; background: none; border: none; cursor: pointer;
-    padding: 4px; color: var(--text); font-size: 22px; line-height: 1;
-  }
-  @media (max-width: 640px) {
-    .nav-links {
-      display: none; position: absolute; top: 56px; left: 0; right: 0;
-      flex-direction: column; align-items: stretch; gap: 0;
-      background: rgba(244,243,238,0.97);
-      border-bottom: 1px solid var(--border);
-      padding: .5rem 1.25rem 1rem; z-index: 99;
-    }
-    .nav-links.open { display: flex; }
-    .nav-links a { padding: .65rem 0; border-bottom: 1px solid var(--border); border-radius: 0; }
-    .nav-links a:last-child { border-bottom: none; border-radius: 99px; margin-top: .5rem; text-align: center; }
-    .nav-burger { display: block; }
-  }
+        /* ── Panel preview ───────────────────────────────────────────────── */
+        .panel-preview {
+            background: #fff;
+            border: 3px solid var(--orange);
+            border-radius: 12px;
+            padding: 16px;
+            max-width: 360px;
+            font-family: system-ui, sans-serif;
+            font-size: 13px;
+            box-shadow: 0 8px 30px rgba(0,0,0,.12);
+            margin: 0 auto;
+        }
+        .panel-preview .ph {
+            display: flex; justify-content: space-between; align-items: center;
+            padding-bottom: 10px; border-bottom: 1px solid #ececec; margin-bottom: 12px;
+            font-weight: 700; color: #333; font-size: 14px;
+        }
+        .panel-preview .ph-btns { display: flex; gap: 5px; }
+        .ph-dot {
+            width: 13px; height: 13px; border-radius: 50%;
+            display: inline-block;
+        }
+        .pstart {
+            width: 100%; padding: 12px; background: var(--orange);
+            color: #fff; border: none; border-radius: 8px;
+            font-weight: 700; font-size: 14px; cursor: default; margin-bottom: 10px;
+        }
+        .pcounters {
+            display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 4px;
+            text-align: center; font-size: 12px; margin-bottom: 12px;
+        }
+        .pcounters div { padding: 5px 4px; border-radius: 6px; }
+        .pc1 { background: #f0fff4; border: 1px solid #c3e6cb; }
+        .pc2 { background: #fff3cd; border: 1px solid #ffc107; }
+        .pc3 { background: #e8f4fd; border: 1px solid #bee5eb; }
+        .plog {
+            background: #1a1a2e; color: #a6adc8;
+            border-radius: 6px; padding: 8px 10px;
+            font-size: 11px; font-family: monospace; line-height: 1.6;
+        }
+        .plog span { color: #5b9bd5; }
 
-  /* ── LAYOUT ── */
-  .container { max-width: 1000px; margin: 0 auto; padding: 0 clamp(1rem,5vw,2.5rem); }
+        /* ── Changelog table ─────────────────────────────────────────────── */
+        .changelog { display: flex; flex-direction: column; gap: 16px; }
+        .cl-item {
+            display: flex; gap: 16px;
+            padding: 16px; background: var(--card);
+            border: 1px solid var(--border); border-radius: var(--radius);
+        }
+        .cl-ver {
+            min-width: 52px; font-weight: 800; font-size: 14px;
+            color: var(--orange); flex-shrink: 0;
+        }
+        .cl-item p { font-size: 13px; color: var(--sub); }
 
-  /* ── HERO ── */
-  .hero { padding: clamp(4rem,10vw,7rem) 0 clamp(3rem,7vw,5rem); text-align: center; }
-  .hero-badge {
-    display: inline-flex; align-items: center; gap: 6px;
-    background: var(--accent-soft); color: var(--accent);
-    border: 1px solid #f5c4ac;
-    font-size: 12px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
-    padding: 5px 14px; border-radius: 99px; margin-bottom: 1.75rem;
-  }
-  .hero-badge::before { content: '●'; font-size: 8px; }
-  h1 {
-    font-family: 'Unbounded', sans-serif;
-    font-size: clamp(2rem,6vw,3.5rem); font-weight: 800;
-    line-height: 1.1; letter-spacing: -0.03em;
-    color: var(--text); margin-bottom: 1.25rem;
-  }
-  h1 span { color: var(--accent); }
-  .hero-sub { font-size: clamp(1rem,2.5vw,1.2rem); color: var(--muted); max-width: 560px; margin: 0 auto 2.25rem; }
-  .hero-actions { display: flex; flex-wrap: wrap; gap: .75rem; justify-content: center; margin-bottom: 3rem; }
+        /* ── Footer ──────────────────────────────────────────────────────── */
+        footer {
+            background: var(--dark); color: #7f849c;
+            text-align: center; padding: 36px 20px;
+            font-size: 13px;
+        }
+        footer a { color: var(--orange); text-decoration: none; }
 
-  /* ── BUTTONS ── */
-  .btn-primary {
-    display: inline-flex; align-items: center; gap: 8px;
-    background: var(--accent); color: #fff;
-    font-family: 'Geologica', sans-serif; font-size: 15px; font-weight: 600;
-    padding: 13px 28px; border-radius: 99px;
-    text-decoration: none; transition: background .15s, transform .1s;
-  }
-  .btn-primary:hover { background: var(--accent-h); transform: translateY(-1px); }
-  .btn-secondary {
-    display: inline-flex; align-items: center; gap: 8px;
-    background: var(--surface); color: var(--text);
-    border: 1px solid var(--border);
-    font-family: 'Geologica', sans-serif; font-size: 15px; font-weight: 500;
-    padding: 13px 28px; border-radius: 99px;
-    text-decoration: none; transition: border-color .15s, transform .1s;
-  }
-  .btn-secondary:hover { border-color: #b8b4aa; transform: translateY(-1px); }
-
-  /* ── STATS ── */
-  .hero-stats { display: flex; flex-wrap: wrap; justify-content: center; gap: 1.5rem; }
-  .stat { display: flex; flex-direction: column; align-items: center; gap: 2px; }
-  .stat-num { font-family: 'Unbounded', sans-serif; font-size: 1.5rem; font-weight: 800; color: var(--text); line-height: 1; }
-  .stat-label { font-size: 12px; color: var(--muted); font-weight: 500; }
-  .stat-div { width: 1px; height: 36px; background: var(--border); align-self: center; }
-  @media (max-width: 600px) { .stat-div { display: none; } }
-
-  /* ── DIFFERENTIATOR BANNER ── */
-  .diff-banner {
-    background: #fffbeb; border: 1px solid #f5d97a;
-    border-radius: var(--radius); padding: 1rem 1.5rem;
-    display: flex; align-items: flex-start; gap: .75rem;
-    margin-top: 2.5rem; text-align: left;
-  }
-  .diff-banner .icon { font-size: 1.2rem; flex-shrink: 0; margin-top: 1px; }
-  .diff-banner p { font-size: .92rem; color: #78600a; line-height: 1.55; }
-  .diff-banner strong { color: #5a4507; }
-
-  /* ── SECTIONS ── */
-  section { padding: clamp(3rem,7vw,5rem) 0; }
-  .section-label { font-size: 11px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--accent); margin-bottom: .75rem; }
-  h2 { font-size: clamp(1.5rem,4vw,2.1rem); font-weight: 600; letter-spacing: -0.02em; line-height: 1.2; margin-bottom: 1rem; }
-  .section-intro { font-size: 1.05rem; color: var(--muted); max-width: 520px; margin-bottom: 3rem; }
-
-  /* ── FEATURES ── */
-  .features-bg { background: var(--surface); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
-  .features-grid {
-    display: grid; grid-template-columns: repeat(auto-fit, minmax(260px,1fr));
-    gap: 1px; background: var(--border); border: 1px solid var(--border);
-    border-radius: var(--radius); overflow: hidden;
-  }
-  .feature-card { background: var(--surface); padding: 1.75rem; }
-  .feature-icon { font-size: 1.4rem; margin-bottom: .9rem; line-height: 1; }
-  .feature-card h3 { font-size: 1rem; font-weight: 600; margin-bottom: .4rem; }
-  .feature-card p { font-size: .9rem; color: var(--muted); line-height: 1.55; }
-
-  /* ── SCREENSHOTS ── */
-  .screenshots-grid {
-    display: grid; grid-template-columns: repeat(auto-fit, minmax(280px,1fr));
-    gap: 1.5rem; margin-top: 0;
-  }
-  .screenshot-card {
-    border: 1px solid var(--border); border-radius: var(--radius);
-    overflow: hidden; background: var(--surface);
-    box-shadow: 0 2px 16px rgba(0,0,0,.06);
-    transition: box-shadow .2s, transform .2s;
-  }
-  .screenshot-card:hover { box-shadow: 0 6px 28px rgba(0,0,0,.1); transform: translateY(-2px); }
-  .screenshot-card img {
-    width: 100%; display: block;
-    border-bottom: 1px solid var(--border);
-  }
-  .screenshot-caption {
-    padding: .85rem 1rem;
-    font-size: .88rem; font-weight: 500; color: var(--muted);
-  }
-  .screenshot-caption strong { color: var(--text); display: block; margin-bottom: 2px; font-size: .92rem; }
-
-  /* ── STEPS ── */
-  .steps { display: flex; flex-direction: column; }
-  .step { display: flex; gap: 1.5rem; padding: 1.75rem 0; border-bottom: 1px solid var(--border); }
-  .step:last-child { border-bottom: none; }
-  .step-num {
-    flex-shrink: 0; width: 40px; height: 40px; border-radius: 50%;
-    background: var(--accent-soft); color: var(--accent);
-    font-family: 'Unbounded', sans-serif; font-size: 13px; font-weight: 800;
-    display: flex; align-items: center; justify-content: center; margin-top: 2px;
-  }
-  .step-body h3 { font-size: 1.05rem; font-weight: 600; margin-bottom: .35rem; }
-  .step-body p { font-size: .92rem; color: var(--muted); }
-
-  /* ── INSTALL CTA ── */
-  .install-section {
-    background: var(--text); border-radius: 20px;
-    padding: clamp(2.5rem,6vw,4rem); text-align: center;
-  }
-  .install-section .section-label { color: #f98a5e; }
-  .install-section h2 { color: #f4f3ee; }
-  .install-section > p { color: #9e9b95; max-width: 480px; margin: 0 auto 2rem; }
-  .install-url {
-    display: inline-block; font-size: .8rem; color: #9e9b95;
-    background: #2a2925; border: 1px solid #3a3830;
-    border-radius: var(--radius-sm); padding: 10px 16px;
-    font-family: monospace; word-break: break-all; max-width: 100%; margin-top: 1.5rem;
-  }
-  .install-hint { font-size: .82rem; color: #6e6b64; margin-top: .75rem; }
-  .install-actions { display: flex; flex-wrap: wrap; gap: .75rem; justify-content: center; }
-  .btn-light {
-    display: inline-flex; align-items: center; gap: 8px;
-    background: #f4f3ee; color: var(--text);
-    font-family: 'Geologica', sans-serif; font-size: 15px; font-weight: 600;
-    padding: 13px 28px; border-radius: 99px; text-decoration: none; transition: background .15s;
-  }
-  .btn-light:hover { background: #fff; }
-  .btn-ghost {
-    display: inline-flex; align-items: center; gap: 8px;
-    background: transparent; color: #c8c5be; border: 1px solid #3a3830;
-    font-family: 'Geologica', sans-serif; font-size: 15px; font-weight: 500;
-    padding: 13px 28px; border-radius: 99px; text-decoration: none; transition: border-color .15s;
-  }
-  .btn-ghost:hover { border-color: #6e6b64; }
-
-  /* ── FAQ ── */
-  .faq-list { display: flex; flex-direction: column; }
-  .faq-item { border-bottom: 1px solid var(--border); }
-  .faq-q {
-    width: 100%; background: none; border: none; cursor: pointer;
-    display: flex; align-items: center; justify-content: space-between; gap: 1rem;
-    padding: 1.25rem 0;
-    font-family: 'Geologica', sans-serif; font-size: 1rem; font-weight: 600;
-    color: var(--text); text-align: left;
-  }
-  .faq-q:hover { color: var(--accent); }
-  .faq-chevron {
-    flex-shrink: 0; width: 20px; height: 20px;
-    border: 1.5px solid var(--border); border-radius: 50%;
-    display: flex; align-items: center; justify-content: center;
-    font-size: 12px; color: var(--muted); transition: transform .2s;
-  }
-  .faq-item.open .faq-chevron { transform: rotate(180deg); }
-  .faq-a {
-    font-size: .94rem; color: var(--muted); line-height: 1.7;
-    max-height: 0; overflow: hidden;
-    transition: max-height .35s ease, padding .35s ease;
-    padding-bottom: 0;
-  }
-  .faq-item.open .faq-a { max-height: 400px; padding-bottom: 1.25rem; }
-
-  /* ── AUTHOR CARD ── */
-  .author-card {
-    display: flex; align-items: center; gap: 1.25rem;
-    background: var(--surface); border: 1px solid var(--border);
-    border-radius: var(--radius); padding: 1.5rem 1.75rem;
-    text-decoration: none; color: inherit; margin-top: 3rem;
-    transition: border-color .15s, box-shadow .15s;
-  }
-  .author-card:hover { border-color: #b8b4aa; box-shadow: 0 2px 16px rgba(0,0,0,.07); }
-  .author-photo {
-    width: 56px; height: 56px; border-radius: 50%;
-    object-fit: cover; flex-shrink: 0;
-    border: 2px solid var(--border);
-  }
-  .author-info { flex: 1; min-width: 0; }
-  .author-info .name { font-size: .97rem; font-weight: 600; color: var(--text); margin-bottom: 3px; }
-  .author-info .role { font-size: .85rem; color: var(--muted); }
-  .author-cta {
-    flex-shrink: 0;
-    font-size: .82rem; font-weight: 600; color: var(--accent);
-    background: var(--accent-soft); border: 1px solid #f5c4ac;
-    padding: 6px 14px; border-radius: 99px;
-    white-space: nowrap;
-  }
-  @media (max-width: 480px) {
-    .author-card { flex-wrap: wrap; }
-    .author-cta { width: 100%; text-align: center; }
-  }
-
-  /* ── FOOTER ── */
-  footer { border-top: 1px solid var(--border); padding: 2rem 0; }
-  .footer-inner { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 1rem; }
-  .footer-left { font-size: .875rem; color: var(--muted); }
-  .footer-left a { color: var(--muted); text-decoration: underline; text-underline-offset: 3px; }
-  .footer-left a:hover { color: var(--text); }
-  .footer-right { display: flex; gap: 1.25rem; flex-wrap: wrap; }
-  .footer-right a { font-size: .875rem; color: var(--muted); text-decoration: none; }
-  .footer-right a:hover { color: var(--text); }
-
-  .divider { border: none; border-top: 1px solid var(--border); margin: 0; }
-</style>
+        @media (max-width: 540px) {
+            .btn-ghost { margin-left: 0; margin-top: 10px; }
+            .hero p { padding: 0 8px; }
+        }
+    </style>
 </head>
 <body>
 
-<!-- NAV -->
-<nav>
-  <a href="https://mklishin.github.io/headhunter-boost/" class="nav-logo">
-    <span class="nav-logo-icon" aria-hidden="true">
-      <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
-        <polygon points="8.2,1 4.4,6.8 7.4,6.8 3.8,13 10.2,7.2 7.2,7.2 10.6,1" fill="white"/>
-      </svg>
-    </span>
-    HH Boost
-  </a>
-  <button class="nav-burger" id="nav-burger" aria-label="Открыть меню" aria-expanded="false">☰</button>
-  <div class="nav-links" id="nav-links">
-    <a href="#features">Возможности</a>
-    <a href="#screenshots">Скриншоты</a>
-    <a href="#how">Установка</a>
-    <a href="#faq">FAQ</a>
-    <a href="https://github.com/mklishin/headhunter-boost" class="nav-cta" target="_blank" rel="noopener">GitHub ↗</a>
-  </div>
-</nav>
-
-<!-- HERO -->
-<section class="hero">
-  <div class="container">
-    <div class="hero-badge">Бесплатно · MIT License · v6.1</div>
-    <h1>HeadHunter Boost —<br /><span>автоотклик</span> на hh.ru</h1>
-    <p class="hero-sub">
-      Tampermonkey-скрипт для массовых откликов на hh.ru: сам нажимает «Откликнуться», подставляет сопроводительное письмо и отправляет отклик — пока вы занимаетесь своими делами.
-    </p>
-    <div class="hero-actions">
-      <a class="btn-primary" href="https://raw.githubusercontent.com/mklishin/headhunter-boost/main/headhunter-boost.user.js">
-        ⚡ Установить скрипт
-      </a>
-      <a class="btn-secondary" href="https://github.com/mklishin/headhunter-boost" target="_blank" rel="noopener">
-        Документация на GitHub
-      </a>
+<!-- ── Hero ──────────────────────────────────────────────────────────────── -->
+<div class="hero">
+    <div class="hero-icon">🚀</div>
+    <h1>HeadHunter Boost</h1>
+    <p>Автоматическая отправка откликов на hh.ru — шаблоны писем, умный пропуск сложных вакансий, человекоподобное поведение.</p>
+    <div>
+        <a class="btn" href="https://raw.githubusercontent.com/mklishin/headhunter-boost/main/headhunter-boost.user.js">
+            ↓ Установить скрипт
+        </a>
+        <a class="btn btn-ghost" href="https://github.com/mklishin/headhunter-boost">
+            GitHub
+        </a>
     </div>
-    <div class="hero-stats">
-      <div class="stat">
-        <span class="stat-num">200</span>
-        <span class="stat-label">откликов в сутки</span>
-      </div>
-      <div class="stat-div"></div>
-      <div class="stat">
-        <span class="stat-num">в 3 раза</span>
-        <span class="stat-label">быстрее, чем вручную</span>
-      </div>
-      <div class="stat-div"></div>
-      <div class="stat">
-        <span class="stat-num">1</span>
-        <span class="stat-label">минута на настройку</span>
-      </div>
+    <div class="badges">
+        <img src="https://img.shields.io/badge/версия-6.4-orange?style=flat-square" alt="v6.4">
+        <img src="https://img.shields.io/badge/лицензия-MIT-blue?style=flat-square" alt="MIT">
+        <img src="https://img.shields.io/badge/Tampermonkey-✓-green?style=flat-square" alt="Tampermonkey">
     </div>
-
-    <!-- Differentiator: works without API -->
-    <div class="diff-banner">
-      <span class="icon">⚡</span>
-      <p><strong>Работает в 2026 году.</strong> В декабре 2025 hh.ru заблокировал API-доступ — это сломало большинство платных расширений и ботов. HeadHunter Boost управляет браузером напрямую и <strong>не зависит от API</strong>, поэтому продолжает работать без изменений.</p>
-    </div>
-  </div>
-</section>
-
-<!-- FEATURES -->
-<div class="features-bg" id="features">
-  <section>
-    <div class="container">
-      <p class="section-label">Возможности</p>
-      <h2>Всё для быстрого поиска работы</h2>
-      <p class="section-intro">Скрипт берёт на себя рутину — вы сосредотачиваетесь на интервью.</p>
-      <div class="features-grid">
-        <div class="feature-card">
-          <div class="feature-icon">⚡</div>
-          <h3>Автоматический отклик</h3>
-          <p>Перебирает все кнопки «Откликнуться» на странице поиска и отправляет массовые отклики — без вашего участия.</p>
-        </div>
-        <div class="feature-card">
-          <div class="feature-icon">✉️</div>
-          <h3>Шаблоны письма</h3>
-          <p>До 5 шаблонов сопроводительного письма. Переменная <code style="font-size:.82rem;background:#f4f3ee;color:#e03d00;padding:1px 5px;border-radius:4px;border:1px solid #dedad1">{JOB_TITLE}</code> автоматически заменяется на название вакансии.</p>
-        </div>
-        <div class="feature-card">
-          <div class="feature-icon">🎲</div>
-          <h3>Случайный шаблон</h3>
-          <p>Включите случайный выбор письма — каждый отклик будет выглядеть немного по-разному. Нужно минимум 2 шаблона.</p>
-        </div>
-        <div class="feature-card">
-          <div class="feature-icon">🧠</div>
-          <h3>Умный пропуск</h3>
-          <p>Вакансии с тестами или дополнительными вопросами пропускаются и сохраняются в список со ссылками — вернётесь к ним вручную.</p>
-        </div>
-        <div class="feature-card">
-          <div class="feature-icon">⏱</div>
-          <h3>Рандомизация задержек</h3>
-          <p>Задержка между откликами — по гауссову распределению в диапазоне [Мин, Макс], пересчитывается каждые 4–7 откликов.</p>
-        </div>
-        <div class="feature-card">
-          <div class="feature-icon">📊</div>
-          <h3>Журнал и счётчики</h3>
-          <p>Отправлено / Пропущено / Обработано в реальном времени. Перетаскиваемая панель управления прямо на странице поиска.</p>
-        </div>
-      </div>
-    </div>
-  </section>
 </div>
 
-<!-- SCREENSHOTS -->
-<section id="screenshots">
-  <div class="container">
-    <p class="section-label">Интерфейс</p>
-    <h2>Как выглядит скрипт в работе</h2>
-    <p class="section-intro">Панель управления появляется прямо на странице hh.ru — перетащите её в удобное место.</p>
-    <div class="screenshots-grid">
-      <div class="screenshot-card">
-        <img
-          src="https://raw.githubusercontent.com/mklishin/headhunter-boost/main/main.jpg"
-          alt="Главная панель HeadHunter Boost — счётчики откликов, кнопка запуска, журнал событий на странице hh.ru"
-          loading="lazy"
-          width="600"
-        />
-        <div class="screenshot-caption">
-          <strong>Главная панель</strong>
-          Счётчики, кнопки управления и журнал событий прямо на странице поиска hh.ru.
+<!-- ── Install ────────────────────────────────────────────────────────────── -->
+<section>
+    <div class="container">
+        <h2>Установка</h2>
+        <p style="margin-bottom:16px;color:var(--sub)">Требуется расширение <a href="https://www.tampermonkey.net/" style="color:var(--orange)">Tampermonkey</a>. Нажмите кнопку ниже — появится диалог установки.</p>
+        <div class="install-box">
+            <span class="install-url" id="install-url">https://raw.githubusercontent.com/mklishin/headhunter-boost/main/headhunter-boost.user.js</span>
+            <button class="copy-btn" onclick="navigator.clipboard.writeText(document.getElementById('install-url').textContent).then(()=>{this.textContent='✓ Скопировано';setTimeout(()=>this.textContent='📋 Копировать',2000})">📋 Копировать</button>
         </div>
-      </div>
-      <div class="screenshot-card">
-        <img
-          src="https://raw.githubusercontent.com/mklishin/headhunter-boost/main/settings.jpg"
-          alt="Настройки HeadHunter Boost — шаблоны сопроводительного письма, Resume ID, задержка между откликами"
-          loading="lazy"
-          width="600"
-        />
-        <div class="screenshot-caption">
-          <strong>Настройки</strong>
-          Resume ID, до 5 шаблонов письма, рандомизация задержек — всё в одной панели.
-        </div>
-      </div>
     </div>
-  </div>
 </section>
 
-<hr class="divider" />
-
-<!-- HOW IT WORKS -->
-<section id="how">
-  <div class="container">
-    <p class="section-label">Как начать</p>
-    <h2>Три шага до первых откликов</h2>
-    <p class="section-intro">Установка за две минуты. Никакого кода. Так же просто, как установить блокировщик рекламы.</p>
-    <div class="steps">
-      <div class="step">
-        <div class="step-num">1</div>
-        <div class="step-body">
-          <h3>Установите Tampermonkey</h3>
-          <p>Расширение доступно для Chrome, Firefox, Edge, Opera и Яндекс Браузера — бесплатно в любом браузере, который поддерживает userscript-скрипты.</p>
+<!-- ── Quick start ────────────────────────────────────────────────────────── -->
+<section>
+    <div class="container" style="display:grid;grid-template-columns:1fr 1fr;gap:48px;align-items:start">
+        <div>
+            <h2>Быстрый старт</h2>
+            <div class="steps">
+                <div class="step">
+                    <div>
+                        <h3>Установите Tampermonkey</h3>
+                        <p>Chrome, Firefox, Edge, Opera — расширение доступно для всех основных браузеров.</p>
+                    </div>
+                </div>
+                <div class="step">
+                    <div>
+                        <h3>Установите скрипт</h3>
+                        <p>Нажмите «Установить скрипт» выше — Tampermonkey покажет диалог подтверждения.</p>
+                    </div>
+                </div>
+                <div class="step">
+                    <div>
+                        <h3>Откройте hh.ru</h3>
+                        <p>Перейдите на страницу поиска вакансий с выбранным резюме. Панель появится в правом нижнем углу.</p>
+                    </div>
+                </div>
+                <div class="step">
+                    <div>
+                        <h3>Введите Resume ID и запустите</h3>
+                        <p>В настройках вставьте ID резюме из URL: <code>hh.ru/resume/ВАШ_ID</code>. Нажмите ▶️ НАЧАТЬ.</p>
+                    </div>
+                </div>
+            </div>
         </div>
-      </div>
-      <div class="step">
-        <div class="step-num">2</div>
-        <div class="step-body">
-          <h3>Установите скрипт одним кликом</h3>
-          <p>Нажмите кнопку «Установить скрипт» выше или перейдите по ссылке на raw-файл — Tampermonkey автоматически предложит установку и дальнейшие обновления.</p>
+        <div>
+            <h2 style="text-align:center">Панель управления</h2>
+            <div class="panel-preview">
+                <div class="ph">
+                    <span>⠿ HeadHunter Boost v6.4</span>
+                    <div class="ph-btns">
+                        <span class="ph-dot" style="background:#ffd60a;border:1px solid #e6bc00">−</span>
+                        <span class="ph-dot" style="background:#34c759;border:1px solid #2aa648">↘</span>
+                    </div>
+                </div>
+                <button class="pstart">▶️ НАЧАТЬ ОТПРАВКУ</button>
+                <div class="pcounters">
+                    <div class="pc1">✅ Sent<br><b>12</b></div>
+                    <div class="pc2">⏩ Skipped<br><b>3</b></div>
+                    <div class="pc3">🔖 Seen<br><b>15</b></div>
+                </div>
+                <div class="plog">
+                    <span>[10:32:15]</span> ✅ Отклик отправлен<br>
+                    <span>[10:32:11]</span> 👆 "Python Developer"<br>
+                    <span>[10:32:08]</span> 🔍 Кнопок: 8, новых: 5
+                </div>
+            </div>
         </div>
-      </div>
-      <div class="step">
-        <div class="step-num">3</div>
-        <div class="step-body">
-          <h3>Откройте hh.ru и запустите</h3>
-          <p>Перейдите на страницу поиска вакансий с выбранным резюме. Введите ваш Resume ID в настройках скрипта (⚙️) и нажмите <strong>▶ НАЧАТЬ ОТПРАВКУ</strong>.</p>
-        </div>
-      </div>
     </div>
-  </div>
 </section>
 
-<hr class="divider" />
-
-<!-- INSTALL CTA -->
-<section id="install">
-  <div class="container">
-    <div class="install-section">
-      <p class="section-label">Установка</p>
-      <h2>Готовы начать?</h2>
-      <p>Кликните — Tampermonkey сам предложит установку. Уже через минуту скрипт будет работать на hh.ru.</p>
-      <div class="install-actions">
-        <a class="btn-light" href="https://raw.githubusercontent.com/mklishin/headhunter-boost/main/headhunter-boost.user.js">
-          ⚡ Установить скрипт
-        </a>
-        <a class="btn-ghost" href="https://github.com/mklishin/headhunter-boost" target="_blank" rel="noopener">
-          Открыть GitHub →
-        </a>
-      </div>
-      <div class="install-url">https://raw.githubusercontent.com/mklishin/headhunter-boost/main/headhunter-boost.user.js</div>
-      <p class="install-hint">Если автоустановка не сработала — скопируйте ссылку и откройте через Tampermonkey → Установить из URL</p>
+<!-- ── Features ───────────────────────────────────────────────────────────── -->
+<section>
+    <div class="container">
+        <h2>Возможности</h2>
+        <div class="features">
+            <div class="feature"><div class="feature-icon">🤖</div><h3>Автоцикл</h3><p>Перебирает все кнопки «Откликнуться» на странице поиска, не переходя на страницу вакансии.</p></div>
+            <div class="feature"><div class="feature-icon">⏩</div><h3>Умный пропуск</h3><p>Вакансии с тестами и анкетами обнаруживаются по URL после клика и пропускаются без потери контекста.</p></div>
+            <div class="feature"><div class="feature-icon">✉️</div><h3>Шаблоны писем</h3><p>До 5 шаблонов с плейсхолдером <code>{JOB_TITLE}</code>. Случайный выбор шаблона по желанию.</p></div>
+            <div class="feature"><div class="feature-icon">👤</div><h3>Мульти-резюме</h3><p>До 5 резюме. Заголовок каждого загружается автоматически с hh.ru.</p></div>
+            <div class="feature"><div class="feature-icon">🎲</div><h3>Рандомизация</h3><p>Задержка по распределению Гаусса в диапазоне [min–max]. Ротация каждые 4–7 откликов.</p></div>
+            <div class="feature"><div class="feature-icon">🖱️</div><h3>Антибот-ввод</h3><p>Чередование click() и focus+Enter с полным циклом keydown/press/up. Нет фиксированной сигнатуры.</p></div>
+            <div class="feature"><div class="feature-icon">🌙</div><h3>Тёмная тема</h3><p>Кнопка 🌙 в Настройках. Переключается мгновенно, запоминается между сессиями.</p></div>
+            <div class="feature"><div class="feature-icon">📋</div><h3>Свобода действий</h3><p>Копирование, вставка и контекстное меню всегда доступны. hh.ru не может заблокировать.</p></div>
+            <div class="feature"><div class="feature-icon">⛔</div><h3>Лимит 200</h3><p>Автоматическая остановка при достижении дневного лимита hh.ru. Звуковой сигнал и попап.</p></div>
+        </div>
     </div>
-  </div>
 </section>
 
-<!-- FAQ -->
-<section id="faq">
-  <div class="container">
-    <p class="section-label">Вопросы и ответы</p>
-    <h2>Часто задаваемые вопросы</h2>
-    <div class="faq-list">
-
-      <div class="faq-item">
-        <button class="faq-q" aria-expanded="false">
-          Как работает автоотклик на hh.ru?
-          <span class="faq-chevron" aria-hidden="true">▾</span>
-        </button>
-        <div class="faq-a">HeadHunter Boost — userscript для Tampermonkey. Скрипт автоматически находит все кнопки «Откликнуться» на странице поиска, подставляет шаблон сопроводительного письма (с заменой {JOB_TITLE} на название вакансии) и отправляет отклик. Вакансии с тестами пропускаются и сохраняются в отдельный список со ссылками.</div>
-      </div>
-
-      <div class="faq-item">
-        <button class="faq-q" aria-expanded="false">
-          Почему скрипт работает, когда другие инструменты сломались?
-          <span class="faq-chevron" aria-hidden="true">▾</span>
-        </button>
-        <div class="faq-a">В декабре 2025 hh.ru заблокировал API-доступ — это сломало большинство расширений и ботов, которые работали через API. HeadHunter Boost не использует API: скрипт управляет браузером напрямую, нажимая кнопки как обычный пользователь. Поэтому он продолжает работать без каких-либо изменений.</div>
-      </div>
-
-      <div class="faq-item">
-        <button class="faq-q" aria-expanded="false">
-          Сколько откликов можно отправить в день?
-          <span class="faq-chevron" aria-hidden="true">▾</span>
-        </button>
-        <div class="faq-a">hh.ru позволяет до 200 откликов в сутки. HeadHunter Boost автоматически останавливается при достижении лимита и показывает уведомление в панели управления.</div>
-      </div>
-
-      <div class="faq-item">
-        <button class="faq-q" aria-expanded="false">
-          Нужно ли устанавливать какие-то программы?
-          <span class="faq-chevron" aria-hidden="true">▾</span>
-        </button>
-        <div class="faq-a">Не нужно. Скрипт работает прямо в вашем браузере через Tampermonkey. Не нужно редактировать код, устанавливать Node.js или регистрировать аккаунты — это просто инструкция для вашего браузера, как нажимать кнопки вместо вас.</div>
-      </div>
-
-      <div class="faq-item">
-        <button class="faq-q" aria-expanded="false">
-          В каких браузерах работает скрипт?
-          <span class="faq-chevron" aria-hidden="true">▾</span>
-        </button>
-        <div class="faq-a">Chrome, Firefox, Edge, Opera и Яндекс Браузер — любой браузер с расширением Tampermonkey, Violentmonkey или Greasemonkey. Скрипт протестирован на всех основных платформах: Windows, macOS, Linux.</div>
-      </div>
-
-      <div class="faq-item">
-        <button class="faq-q" aria-expanded="false">
-          Безопасно ли использовать автоотклик?
-          <span class="faq-chevron" aria-hidden="true">▾</span>
-        </button>
-        <div class="faq-a">Скрипт работает только в вашем браузере и не передаёт никакие данные — всё остаётся на вашем компьютере. Исходный код полностью открыт и проверяем на GitHub. Рандомизация задержек имитирует естественное поведение пользователя.</div>
-      </div>
-
-      <div class="faq-item">
-        <button class="faq-q" aria-expanded="false">
-          Почему это бесплатно?
-          <span class="faq-chevron" aria-hidden="true">▾</span>
-        </button>
-        <div class="faq-a">Никто не оказывает услуги — ваш браузер просто нажимает на кнопки, как если бы вы сами это делали. Скрипт создан менеджером продукта Михаилом Клишиным как open-source инструмент для соискателей.</div>
-      </div>
-
+<!-- ── Changelog ──────────────────────────────────────────────────────────── -->
+<section>
+    <div class="container">
+        <h2>История версий</h2>
+        <div class="changelog">
+            <div class="cl-item"><div class="cl-ver">6.4</div><div><b>Защита от слежки.</b> <p>Перехват событий видимости вкладки, спуфинг visibilityState, разблокировка copy/paste/contextmenu. Исправлено исчезновение панели после SPA-навигации React.</p></div></div>
+            <div class="cl-item"><div class="cl-ver">6.3</div><div><b>Надёжность интерфейса.</b> <p>Заголовок панели виден в тёмной теме. Подсветка посещённых вакансий. Скрытие неактивных полей настроек.</p></div></div>
+            <div class="cl-item"><div class="cl-ver">6.2</div><div><b>Отладка.</b> <p>dbg()-канал, защита каждого GM_setValue, полный стек ошибок цикла.</p></div></div>
+            <div class="cl-item"><div class="cl-ver">6.1</div><div><b>Крупное обновление.</b> <p>Мульти-резюме, тёмная тема, сворачиваемая панель, подсветка карточек, случайный шаблон.</p></div></div>
+            <div class="cl-item"><div class="cl-ver">6.0</div><div><b>Рандомизация и лимиты.</b> <p>Гауссова задержка, обнаружение лимита 200, настраиваемые шаблоны.</p></div></div>
+        </div>
+        <p style="margin-top:20px;font-size:13px;color:var(--sub)">
+            Полная история: <a href="https://github.com/mklishin/headhunter-boost/blob/main/CHANGELOG.md" style="color:var(--orange)">CHANGELOG.md</a>
+        </p>
     </div>
-
-    <!-- Author card — primary promo for mklishin.github.io -->
-    <a class="author-card" href="https://mklishin.github.io/" rel="author" target="_blank">
-      <img
-        class="author-photo"
-        src="https://github.com/mklishin.png"
-        alt="Михаил Клишин — Product Manager"
-        width="56" height="56"
-        loading="lazy"
-      />
-      <div class="author-info">
-        <div class="name">Михаил Клишин</div>
-        <div class="role">Product Manager · HeadHunter Boost</div>
-      </div>
-      <span class="author-cta">Портфолио →</span>
-    </a>
-
-  </div>
 </section>
 
-<!-- FOOTER -->
+<!-- ── Footer ─────────────────────────────────────────────────────────────── -->
 <footer>
-  <div class="container footer-inner">
-    <div class="footer-left">
-      Сделано <a href="https://mklishin.github.io/" rel="author" target="_blank">mklishin</a> · MIT · v6.1
-    </div>
-    <div class="footer-right">
-      <a href="https://github.com/mklishin/headhunter-boost" target="_blank" rel="noopener">GitHub</a>
-      <a href="https://github.com/mklishin/headhunter-boost/issues" target="_blank" rel="noopener">Сообщить о баге</a>
-      <a href="https://github.com/mklishin/headhunter-boost/blob/main/CHANGELOG.md" target="_blank" rel="noopener">Changelog</a>
-    </div>
-  </div>
+    <p>HeadHunter Boost — <a href="https://github.com/mklishin/headhunter-boost">github.com/mklishin/headhunter-boost</a></p>
+    <p style="margin-top:8px">MIT License © 2025 mklishin</p>
 </footer>
-
-<script>
-  // FAQ accordion
-  document.querySelectorAll('.faq-q').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const item = btn.closest('.faq-item');
-      const isOpen = item.classList.contains('open');
-      document.querySelectorAll('.faq-item.open').forEach(el => {
-        el.classList.remove('open');
-        el.querySelector('.faq-q').setAttribute('aria-expanded', 'false');
-      });
-      if (!isOpen) {
-        item.classList.add('open');
-        btn.setAttribute('aria-expanded', 'true');
-      }
-    });
-  });
-
-  // Mobile nav burger
-  const burger = document.getElementById('nav-burger');
-  const links  = document.getElementById('nav-links');
-  burger.addEventListener('click', () => {
-    const open = links.classList.toggle('open');
-    burger.setAttribute('aria-expanded', String(open));
-    burger.textContent = open ? '✕' : '☰';
-  });
-  links.querySelectorAll('a').forEach(a => {
-    a.addEventListener('click', () => {
-      links.classList.remove('open');
-      burger.setAttribute('aria-expanded', 'false');
-      burger.textContent = '☰';
-    });
-  });
-</script>
 
 </body>
 </html>

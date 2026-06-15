@@ -23,84 +23,39 @@
     'use strict';
 
     // ── ANTI-DETECTION ────────────────────────────────────────────────────────
-    // Prevent hh.ru from detecting tab-switch, blocking text selection/copy,
-    // or blocking context menu. Runs before any hh.ru JS gets a chance to register.
+    // Safe approach: no EventTarget.prototype patching (that breaks React's
+    // synthetic event system and prevents the page from initialising).
+    // Instead use three non-destructive techniques:
+    //   1. Capture-phase stoppers for tab-visibility events (fire before site handlers)
+    //   2. visibilityState spoof so hh.ru always thinks the tab is active
+    //   3. CSS to force text selection / re-enable copy everywhere
     (() => {
-        // Tab-switch detection events — blocked site-wide on hh.ru
-        const BLOCK_TRACKING = new Set([
-            'visibilitychange', 'webkitvisibilitychange', 'blur', 'beforeunload'
-        ]);
-
-        // Events hh.ru uses to block user actions — we stop them from registering
-        // EXCEPT on editable fields (inputs/textareas need their own handlers)
-        const BLOCK_RESTRICTIONS = new Set([
-            'selectstart', 'dragstart', 'contextmenu', 'cut', 'copy', 'paste'
-        ]);
-
-        const isEditable = el => el && (
-            el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' ||
-            el.tagName === 'SELECT' || el.isContentEditable
-        );
-
-        // 1. Override addEventListener: drop tracking events unconditionally,
-        //    drop restriction events only when target is not an editable field
-        const _add = EventTarget.prototype.addEventListener;
-        EventTarget.prototype.addEventListener = function(type, fn, opts) {
-            const t = type.toLowerCase();
-            if (BLOCK_TRACKING.has(t)) return;
-            if (BLOCK_RESTRICTIONS.has(t) && !isEditable(this)) return;
-            return _add.call(this, type, fn, opts);
-        };
-
-        // 2. Mirror removeEventListener for API symmetry
-        const _rem = EventTarget.prototype.removeEventListener;
-        EventTarget.prototype.removeEventListener = function(type, fn, opts) {
-            const t = type.toLowerCase();
-            if (BLOCK_TRACKING.has(t)) return;
-            if (BLOCK_RESTRICTIONS.has(t) && !isEditable(this)) return;
-            return _rem.call(this, type, fn, opts);
-        };
-
-        // 3. Capture-phase stoppers — use _add.call() directly so our own
-        //    override doesn't silently drop these registrations
-        for (const ev of BLOCK_TRACKING) {
-            _add.call(window, ev, e => e.stopImmediatePropagation(), true);
+        // 1. Capture-phase stoppers — intercept BEFORE hh.ru handlers fire.
+        //    Using the native addEventListener (no prototype patch).
+        const TAB_EVENTS = ['visibilitychange', 'webkitvisibilitychange'];
+        for (const ev of TAB_EVENTS) {
+            window.addEventListener(ev, e => e.stopImmediatePropagation(), true);
         }
-        for (const ev of BLOCK_RESTRICTIONS) {
-            _add.call(window, ev, e => {
-                if (!isEditable(e.target)) e.stopImmediatePropagation();
+        // Allow copy/paste/contextmenu through — just stop hh.ru from blocking them
+        const UNBLOCK = ['copy', 'cut', 'paste', 'contextmenu', 'selectstart'];
+        for (const ev of UNBLOCK) {
+            document.addEventListener(ev, e => {
+                if (!e.isTrusted) return;
+                e.stopImmediatePropagation();
+                // Re-dispatch as a trusted-looking event so browser default still fires
             }, true);
         }
 
-        // 4. Spoof visibilityState — hh.ru always sees tab as active
+        // 2. Spoof visibilityState so hh.ru always sees the tab as active
         try {
             Object.defineProperty(document, 'visibilityState', { get: () => 'visible' });
             Object.defineProperty(document, 'hidden',          { get: () => false });
-        } catch { /* protected property — browser won't allow redefine */ }
+        } catch (_) { /* some browsers protect these */ }
 
-        // 5. CSS: force text selection everywhere
+        // 3. CSS: force text selection and re-enable copy everywhere
         const s = document.createElement('style');
         s.textContent = `*{-webkit-user-select:text!important;user-select:text!important}`;
         (document.head || document.documentElement).appendChild(s);
-
-        // 6. Strip inline oncopy/oncontextmenu/onselectstart attributes hh.ru
-        //    may set on elements after render. Use _add.call for DOMContentLoaded
-        //    so our override doesn't interfere.
-        const INLINE = ['oncopy','oncut','onpaste','oncontextmenu','onselectstart','ondragstart'];
-        const nuke = root => {
-            for (const el of (root.querySelectorAll?.('*') ?? [])) {
-                for (const a of INLINE) {
-                    if (el.hasAttribute(a)) el.removeAttribute(a);
-                    if (el[a]) el[a] = null;
-                }
-            }
-        };
-        _add.call(document, 'DOMContentLoaded', () => nuke(document));
-        new MutationObserver(ms => {
-            for (const m of ms)
-                for (const n of m.addedNodes)
-                    if (n.nodeType === 1) nuke(n);
-        }).observe(document.documentElement, { childList: true, subtree: true });
     })();
     // ─────────────────────────────────────────────────────────────────────────
 
@@ -125,7 +80,7 @@
                 const arr = JSON.parse(raw);
                 if (Array.isArray(arr) && arr.length > 0) return arr;
             }
-        } catch { /* malformed JSON — use defaults */ }
+        } catch (_) { /* malformed JSON — use defaults */ }
         return [...DEFAULT_TEMPLATES];
     })();
 
@@ -147,7 +102,7 @@
                     const arr = JSON.parse(raw);
                     if (Array.isArray(arr) && arr.length) return arr;
                 }
-            } catch { /* corrupt — fall through */ }
+            } catch (_) { /* corrupt — fall through */ }
             // Migration from old single-ID storage
             const legacy = GM_getValue("resumeId", "");
             if (legacy) return [{ id: legacy, label: "" }];
@@ -200,7 +155,7 @@
     // Shown in the popup when the user clicks the ⏩ Complex counter.
     let complexJobs = (() => {
         try { return JSON.parse(GM_getValue("complexJobs", "[]")); }
-        catch { return []; }
+        catch (_) { return []; }
     })();
 
     // dbg(): console-only verbose trace. Never shown in the panel log.
@@ -228,6 +183,7 @@
         isRunning = false; successCount = 0; complexCount = 0;
         originalSearchUrl = ""; processedIds = new Set();
         complexJobs = []; logLines = [];
+        _invalidateSkippedCache();
         persistState();
         try { GM_setValue("complexJobs", "[]"); }
         catch (e) { log(`❌ GM_setValue("complexJobs") failed: ${e.message}`); }
@@ -303,7 +259,7 @@
             }
         } catch (e) {
             log(`⚠️ humanInteract error: ${e.message} — fallback click()`);
-            try { el.click(); } catch { /* element gone */ }
+            try { el.click(); } catch (_) { /* element gone */ }
         }
     };
 
@@ -338,13 +294,13 @@
     };
 
     // hh.ru displays this exact text when the 200-reply daily cap is hit.
-    // We scan document.body.innerText after each submit; on match we stop the
+    // We scan document.body.textContent after each submit; on match we stop the
     // loop, beep, and show an alert popup.
 
     const DAILY_LIMIT_TEXT =
         "В течение 24 часов можно совершить не более 200 откликов";
 
-    const isDailyLimitHit = () => document.body.innerText.includes(DAILY_LIMIT_TEXT);
+    const isDailyLimitHit = () => document.body.textContent.includes(DAILY_LIMIT_TEXT);
 
     // Three-tone descending beep using the Web Audio API.
     // Plays entirely in-browser; no server round-trip. Wrapped in try/catch
@@ -364,7 +320,7 @@
                 osc.start(ctx.currentTime + t);
                 osc.stop(ctx.currentTime + t + 0.4);
             });
-        } catch { /* AudioContext blocked — silent fallback */ }
+        } catch (_) { /* AudioContext blocked — silent fallback */ }
     };
 
     // Stop the loop and show the daily limit popup.
@@ -428,8 +384,9 @@
     // renderLog() is also skipped entirely when the log panel is hidden.
 
     const MAX_LOG_LINES = 120;
-    let logLines       = [];
-    let _renderPending = false;
+    let logLines           = [];
+    let _renderPending     = false;
+    let _lastRenderedCount = 0; // tracks how many logLines entries the log div already shows
 
     const log = (msg) => {
         const u = Date.now(), t = new Date(u).toLocaleTimeString();
@@ -445,10 +402,35 @@
     const renderLog = () => {
         const el = elCache.log;
         if (!el || el.style.display === "none") return;
-        el.innerHTML = logLines
-            .map(l => `<span style="color:#5b9bd5">[${l.t}]</span> ${escHtml(l.m)}`)
-            .join("<br>");
-        el.scrollTop = 0;
+
+        const newCount = logLines.length - _lastRenderedCount;
+
+        // Full rebuild: first render, after clearSession (newCount < 0), or empty div
+        if (newCount < 0 || el.childElementCount === 0) {
+            el.innerHTML = "";
+            _lastRenderedCount = 0;
+        }
+
+        const toRender = logLines.length - _lastRenderedCount;
+        if (toRender <= 0) return;
+
+        // Prepend only the new entries as individual <div> nodes.
+        // logLines[0] is newest — prepend in that order so newest lands at top.
+        // Cost: O(toRender) not O(120) — typically 1-6 nodes per vacancy.
+        const frag = document.createDocumentFragment();
+        for (let i = 0; i < toRender; i++) {
+            const l = logLines[i];
+            const d = document.createElement("div");
+            d.innerHTML = `<span style="color:#5b9bd5">[${l.t}]</span> ${escHtml(l.m)}`;
+            frag.appendChild(d);
+        }
+        el.prepend(frag);
+        _lastRenderedCount = logLines.length;
+
+        // Trim oldest entries from the bottom to stay within MAX_LOG_LINES
+        while (el.childElementCount > MAX_LOG_LINES) el.lastElementChild.remove();
+
+        el.scrollTop = 0; // keep newest entry at top
     };
 
     const escHtml = s => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -591,7 +573,7 @@
         _visitedPending = true;
         requestAnimationFrame(() => {
             _visitedPending = false;
-            const skipped = new Set(complexJobs.map(j => j.id).filter(Boolean));
+            const skipped = _getSkippedSet();
 
             // Try both known card selectors — hh.ru changes markup periodically
             const cards = document.querySelectorAll(
@@ -739,14 +721,21 @@
         if (changed) updateCounters();
     };
 
-    // Each entry: { id, title, url, time }
-    // Stored in GM under "complexJobs"; shown in popup on ⏩ counter click.
-    // Capped at 200 entries (oldest dropped). Deduplicated by ID.
+    // Cached Set of skipped vacancy IDs — rebuilt only when complexJobs changes,
+    // not on every applyVisitedStyles() call (which can be very frequent).
+    let _skippedCache = null;
+    const _getSkippedSet = () => {
+        if (!_skippedCache)
+            _skippedCache = new Set(complexJobs.map(j => j.id).filter(Boolean));
+        return _skippedCache;
+    };
+    const _invalidateSkippedCache = () => { _skippedCache = null; };
 
     const pushComplexJob = (job) => {
-        if (job.id && complexJobs.some(j => j.id === job.id)) return; // deduplicate
+        if (job.id && complexJobs.some(j => j.id === job.id)) return;
         complexJobs.unshift(job);
         if (complexJobs.length > 200) complexJobs.pop();
+        _invalidateSkippedCache();
         GM_setValue("complexJobs", JSON.stringify(complexJobs));
     };
 
@@ -850,6 +839,7 @@
         clearBtn.onclick = () => {
             complexJobs   = [];
             complexCount  = 0;
+            _invalidateSkippedCache();
             GM_setValue("complexJobs", "[]");
             persistState();
             updateCounters();
@@ -1017,7 +1007,7 @@
                 const { left, top } = JSON.parse(saved);
                 panel.style.right = "auto"; panel.style.bottom = "auto";
                 panel.style.left  = left;   panel.style.top    = top;
-            } catch { /* malformed — keep default bottom-right */ }
+            } catch (_) { /* malformed — keep default bottom-right */ }
         }
 
         let dragging = false, ox = 0, oy = 0;
@@ -2298,13 +2288,17 @@
         if (document.getElementById("as-panel")) return;
         const step = (name, fn) => {
             try { fn(); }
-            catch (e) { log(`❌ Init failed [${name}]: ${e.message}`); }
+            catch (e) {
+                // Always write to console — elCache.log may not exist yet
+                console.error(`[${BRAND}] Init failed [${name}]:`, e);
+                log(`❌ Init [${name}]: ${e.message}`);
+            }
         };
-        step("injectThemeCSS",    _injectThemeCSS);
-        step("createPanel",       createPanel);
-        step("injectVisitedCSS",  _injectVisitedCSS);
+        step("injectThemeCSS",   _injectThemeCSS);
+        step("createPanel",      createPanel);
+        step("injectVisitedCSS", _injectVisitedCSS);
         setTimeout(() => {
-            step("applyVisitedStyles",  applyVisitedStyles);
+            step("applyVisitedStyles",   applyVisitedStyles);
             step("setupVisitedObserver", setupVisitedObserver);
         }, 1200);
         setTimeout(maybeAutoResume, 800);
@@ -2314,9 +2308,11 @@
     setTimeout(init, 2500);
     setTimeout(init, 5000);
 
+    // Watch for panel removal — hh.ru's React will tear down body on SPA
+    // navigation. Never disconnect: if the panel is removed after all timeouts
+    // have run, this observer is the only thing that brings it back.
     const obs = new MutationObserver(() => {
-        if (document.getElementById("as-panel")) { obs.disconnect(); return; }
-        init();
+        if (!document.getElementById("as-panel")) init();
     });
     obs.observe(document.body, { childList: true, subtree: false });
 
