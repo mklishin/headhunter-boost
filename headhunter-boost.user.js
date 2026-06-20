@@ -62,6 +62,21 @@
     const VERSION = "6.4";
     const BRAND   = "HeadHunter Boost";
 
+    // Shared regex for extracting numeric vacancy IDs from hh.ru URLs.
+    // Hoisted here (top of script) so it is defined before any function that
+    // references it gets called — avoids re-creating a RegExp literal on
+    // every match() call across getVacancyIdFromBtn / applyVisitedStyles.
+    const VACANCY_ID_RE = /\/vacancy\/(\d+)/;
+
+    // Reads a GM key, JSON.parse's it, falls back to `fb` on any error
+    // (missing key, corrupt JSON, wrong type). Used everywhere a persisted
+    // array/object is loaded at startup — avoids repeating the same
+    // try/catch three times.
+    const gmJSON = (key, fb) => {
+        try { const v = JSON.parse(GM_getValue(key, JSON.stringify(fb))); return v ?? fb; }
+        catch (_) { return fb; }
+    };
+
     // Shown in Settings. User can edit, add (up to 5), or delete.
     // Persisted under GM key "userTemplates". Cleared only by deleting in Settings.
     // {JOB_TITLE} is replaced with the vacancy title at send time.
@@ -72,16 +87,10 @@
         `Здравствуйте, коллеги! Есть релевантный опыт!\n\nГотов присоединиться к вашей команде на позицию «{JOB_TITLE}».\n\nС уважением`
     ];
 
-    // Load persisted user templates; fall back to defaults on missing or corrupt data.
+    // Load persisted user templates; fall back to defaults on missing/corrupt/empty.
     let coverTemplates = (() => {
-        try {
-            const raw = GM_getValue("userTemplates", "");
-            if (raw) {
-                const arr = JSON.parse(raw);
-                if (Array.isArray(arr) && arr.length > 0) return arr;
-            }
-        } catch (_) { /* malformed JSON — use defaults */ }
-        return [...DEFAULT_TEMPLATES];
+        const arr = gmJSON("userTemplates", []);
+        return (Array.isArray(arr) && arr.length) ? arr : [...DEFAULT_TEMPLATES];
     })();
 
     // GM keys: resumeId · templateId · tmplRandom · delayMs · userTemplates ·
@@ -96,17 +105,11 @@
         // Migration: if the old single "resumeId" key exists and "resumes" is
         // empty, we promote the old value so existing users don't lose their ID.
         RESUMES: (() => {
-            try {
-                const raw = GM_getValue("resumes", "");
-                if (raw) {
-                    const arr = JSON.parse(raw);
-                    if (Array.isArray(arr) && arr.length) return arr;
-                }
-            } catch (_) { /* corrupt — fall through */ }
+            const arr = gmJSON("resumes", []);
+            if (Array.isArray(arr) && arr.length) return arr;
             // Migration from old single-ID storage
             const legacy = GM_getValue("resumeId", "");
-            if (legacy) return [{ id: legacy, label: "" }];
-            return [];
+            return legacy ? [{ id: legacy, label: "" }] : [];
         })(),
         ACTIVE_RESUME_IDX: GM_getValue("activeResumeIdx", 0),
 
@@ -145,18 +148,16 @@
     // context) lives in GM storage. In-memory vars below are working copies.
 
     let isRunning         = GM_getValue("isRunning",         false);
-    let successCount      = GM_getValue("successCount",      0);   // cover letters submitted
-    let complexCount      = GM_getValue("complexCount",      0);   // complex jobs skipped
-    let originalSearchUrl = GM_getValue("originalSearchUrl", "");  // set once on START
-    // processedIds: Set in memory (O(1) has()), JSON array in GM.
-    // Union of: applied + complex-skipped + already-applied vacancies.
-    let processedIds      = new Set(JSON.parse(GM_getValue("processedIds", "[]")));
-    // complexJobs: [{id, title, url, time}, …] newest-first, capped at 200.
-    // Shown in the popup when the user clicks the ⏩ Complex counter.
-    let complexJobs = (() => {
-        try { return JSON.parse(GM_getValue("complexJobs", "[]")); }
-        catch (_) { return []; }
-    })();
+    let successCount      = GM_getValue("successCount",      0);
+    let complexCount      = GM_getValue("complexCount",      0);
+    let originalSearchUrl = GM_getValue("originalSearchUrl", "");
+    // processedIds: union of applied + skipped + already-applied. Used to
+    // avoid re-clicking. NOT used for badge display (too broad).
+    let processedIds = new Set(gmJSON("processedIds", []));
+    // appliedIds: ONLY vacancies where submitBtn.click() actually fired.
+    // Used for the "✓ Отклик" badge — accurate, no false positives.
+    let appliedIds   = new Set(gmJSON("appliedIds", []));
+    let complexJobs  = gmJSON("complexJobs", []);
 
     // dbg(): console-only verbose trace. Never shown in the panel log.
     // Use for per-step timing, interaction method, DOM probe results — anything
@@ -177,11 +178,12 @@
         write("complexCount",       complexCount);
         write("originalSearchUrl",  originalSearchUrl);
         write("processedIds",       JSON.stringify([...processedIds]));
+        write("appliedIds",         JSON.stringify([...appliedIds]));
     };
 
     const clearSession = () => {
         isRunning = false; successCount = 0; complexCount = 0;
-        originalSearchUrl = ""; processedIds = new Set();
+        originalSearchUrl = ""; processedIds = new Set(); appliedIds = new Set();
         complexJobs = []; logLines = [];
         _invalidateSkippedCache();
         persistState();
@@ -210,35 +212,12 @@
     function _randInt(lo, hi) { return lo + Math.floor(Math.random() * (hi - lo + 1)); }
 
 
-    // Replaces bare el.click() at the two interaction points (response button
-    // and submit button). Randomly varies the input method so automated
-    // sequences don't produce a uniform stream of programmatic click events.
-    //
-    // Probability distribution (chosen to look realistic, not 50/50):
-    //
-    //   55%  direct .click()
-    //        Most common even for real users with a mouse.
-    //
-    //   35%  focus() → Enter keydown/keypress/keyup
-    //        Common for keyboard users and form navigation.
-    //        Full key-event triad avoids the "missing keypress" bot signal.
-    //
-    //   5%   previous-element Tab → focus target → Enter
-    //        Simulates a user who is keyboard-navigating the page. Tab is fired
-    //        on document.activeElement (whatever was last focused) so the browser
-    //        sees a coherent Tab-out → Tab-in sequence, not a floating Enter.
-    //
-    //   5%   previous-element Shift+Tab → Tab forward → focus target → Enter
-    //        Rarest. Models a user who overshot by one field and corrected.
-    //
-    // The helper is async because the Tab variant inserts a micro-jitter between
-    // the Tab event and Enter to avoid identical event timestamps.
-    //
-    // IMPORTANT: The outcome (element activation) must be identical across all
-    // paths — this function never changes *what* gets activated, only *how*.
+    // Replaces bare el.click() at both interaction points (response button,
+    // submit button): 60% direct click, 40% focus()+Enter with a full
+    // keydown/keypress/keyup triad (missing keypress is a known bot signal).
+    // Falls back to a plain click on any DOM error.
 
-    // Dispatches the full keydown/keypress/keyup triad. Omitting keypress is a
-    // known anti-bot fingerprint so all three phases are always fired.
+    // Dispatches the full keydown/keypress/keyup triad.
     const _key = (el, key, code, extra = {}) => {
         const opts = { key, code, bubbles: true, cancelable: true, ...extra };
         el.dispatchEvent(new KeyboardEvent("keydown",  opts));
@@ -373,20 +352,14 @@
         overlay.addEventListener("click", e => { if (e.target === overlay) overlay.remove(); });
     };
 
-    // Each entry: { unix: number, time: string, msg: string }
-    // logLines is newest-first (unshift) so the panel renders newest at top.
-    //
-    // Live panel  : [HH:MM:SS] message only — concise for glancing.
-    // Copied text : [HH:MM:SS] [unix:N] message — full for debugging/grepping.
-    //
-    // renderLog() is RAF-debounced: a burst of log() calls (4-6 per vacancy)
-    // collapses into a single DOM innerHTML rebuild per animation frame.
-    // renderLog() is also skipped entirely when the log panel is hidden.
+    // Newest-first list. Live panel shows [HH:MM:SS] msg; copy adds [unix:N].
+    // renderLog() is RAF-debounced and only appends new entries (not a full
+    // rebuild) — see _lastRenderedCount below. Skipped while panel is hidden.
 
     const MAX_LOG_LINES = 120;
     let logLines           = [];
     let _renderPending     = false;
-    let _lastRenderedCount = 0; // tracks how many logLines entries the log div already shows
+    let _lastRenderedCount = 0; // how many logLines entries are already in the DOM
 
     const log = (msg) => {
         const u = Date.now(), t = new Date(u).toLocaleTimeString();
@@ -529,19 +502,9 @@
         }
     };
 
-    // Visually marks vacancy cards on the search page that have already been
-    // processed (applied or skipped). Updated after each vacancy is handled
-    // and on page load.
-    //
-    // Distinguishes two states:
-    //   applied — green tint + "✓ Отклик" badge
-    //   skipped — grey tint + "⏩ Пропущено" badge
-    //
-    // Applied vs skipped is determined by cross-referencing processedIds with
-    // complexJobs (skipped vacancies are stored there). No extra storage key.
-    //
-    // Lazy-load support: a MutationObserver watches the search results container
-    // and re-runs applyVisitedStyles() when hh.ru appends new cards on scroll.
+    // Marks processed vacancy cards: green="applied", grey="skipped", faint="seen"
+    // (touched but no submit fired). Re-applied on each vacancy and via the
+    // MutationObserver below for lazy-loaded cards.
 
     const _injectVisitedCSS = () => {
         if (document.getElementById("as-visited-css")) return;
@@ -568,58 +531,74 @@
     };
 
     let _visitedPending = false;
-    const applyVisitedStyles = () => {
+    const applyVisitedStyles = (root = document) => {
         if (_visitedPending || processedIds.size === 0) return;
         _visitedPending = true;
         requestAnimationFrame(() => {
             _visitedPending = false;
             const skipped = _getSkippedSet();
 
-            // Try both known card selectors — hh.ru changes markup periodically
-            const cards = document.querySelectorAll(
+            // Try both known card selectors — hh.ru changes markup periodically.
+            // root defaults to document but the MutationObserver passes its own
+            // container so we don't re-scan the entire page on every micro-mutation.
+            const cards = root.querySelectorAll(
                 '[data-qa="vacancy-serp__vacancy"], [class*="serp-item"][class*="vacancy"]'
             );
 
             cards.forEach(card => {
-                // Extract vacancy ID from title anchor href
                 const link = card.querySelector('[data-qa="serp-item__title"]') ||
                              card.querySelector('a[href*="/vacancy/"]');
-                const m = link?.href?.match(/\/vacancy\/(\d+)/);
+                const m = link?.href?.match(VACANCY_ID_RE);
                 if (!m) return;
 
                 const vid = m[1];
+
+                // Gate first: most cards on any given page are untouched, so
+                // this single Set lookup rejects them before we do any further
+                // membership checks below.
                 if (!processedIds.has(vid)) return;
-                const status = skipped.has(vid) ? "skipped" : "applied";
-                if (card.dataset.hhb === status) return;  // already painted
+
+                const isApp  = appliedIds.has(vid);
+                const isSkip = skipped.has(vid);
+
+                // Three visual states:
+                //   applied — submitBtn actually clicked       → green outline + badge
+                //   skipped — complex job, navigated away      → grey outline + badge
+                //   seen    — processed but no submit fired    → faint tint, no badge
+                const status = isApp ? "applied" : isSkip ? "skipped" : "seen";
+                if (card.dataset.hhb === status) return;
                 card.dataset.hhb = status;
 
-                const color = status === "applied"
-                    ? "rgba(39,174,96,0.18)"
-                    : "rgba(108,117,125,0.13)";
-                const border = status === "applied"
-                    ? "2px solid rgba(39,174,96,0.7)"
-                    : "2px solid rgba(108,117,125,0.5)";
+                const bg     = isApp  ? "rgba(39,174,96,0.13)"
+                             : isSkip ? "rgba(108,117,125,0.11)"
+                             :          "rgba(0,0,0,0.04)";
+                const border = isApp  ? "2px solid rgba(39,174,96,0.65)"
+                             : isSkip ? "2px solid rgba(108,117,125,0.45)"
+                             :          "none";
 
-                // Paint card root + every direct child div with setProperty "important"
-                // This beats any CSS rule including hh.ru magritte inline styles
-                const paint = el => {
-                    el.style.setProperty("background-color", color, "important");
-                    el.style.setProperty("outline", border, "important");
-                    el.style.setProperty("outline-offset", "-2px", "important");
-                    el.style.setProperty("position", "relative", "important");
-                };
+                // Build the full inline declaration once, append in a single write.
+                // Four separate setProperty() calls each trigger their own style
+                // mutation; cssText += does it in one operation per element.
+                const decl = `background-color:${bg}!important;` +
+                             (border !== "none" ? `outline:${border}!important;` : "") +
+                             `outline-offset:-2px!important;position:relative!important;`;
+                const paint = el => { el.style.cssText += decl; };
                 paint(card);
                 card.querySelectorAll(":scope > div, :scope > div > div").forEach(paint);
 
-                // Badge — remove stale one first
+                // Badge — only for applied/skipped, not for "seen".
+                // Positioned bottom-left to avoid hh.ru's ♡ button (top-right).
                 card.querySelector(".as-visited-badge")?.remove();
-                const badge = document.createElement("div");
-                badge.className   = `as-visited-badge ${status}`;
-                badge.textContent = status === "applied" ? "✓ Отклик" : "⏩ Пропущено";
-                // Insert into card — find a positioned ancestor for correct stacking
-                const host = card.querySelector('[class*="vacancy-card"], :scope > div') || card;
-                host.style.setProperty("position", "relative", "important");
-                host.appendChild(badge);
+                if (isApp || isSkip) {
+                    const badge       = document.createElement("div");
+                    badge.className   = `as-visited-badge ${status}`;
+                    badge.textContent = isApp ? "✓ Отклик" : "⏩ Пропущено";
+                    badge.style.cssText = "position:absolute;bottom:10px;left:10px;" +
+                                          "z-index:9999;pointer-events:none;";
+                    const host = card.querySelector('[class*="vacancy-card"], :scope > div') || card;
+                    host.style.setProperty("position", "relative", "important");
+                    host.appendChild(badge);
+                }
             });
         });
     };
@@ -638,7 +617,9 @@
             if (_visitedThrottle) return;
             _visitedThrottle = setTimeout(() => {
                 _visitedThrottle = null;
-                applyVisitedStyles();
+                // Scope to `target` — avoids re-querying the entire document
+                // when new cards only ever appear inside this container.
+                applyVisitedStyles(target);
             }, 400);
         });
         _visitedObserver.observe(target, { childList: true, subtree: true });
@@ -650,6 +631,8 @@
     //   Title text: [data-qa="serp-item__title-text"] (span inside title link)
     //   NOTE: data-vacancy-id attribute does NOT exist on hh.ru search cards.
 
+    // (VACANCY_ID_RE hoisted to top-of-script — see near BRAND/VERSION)
+
     // Returns the numeric vacancy ID string, or null if all strategies fail.
     // null means we cannot deduplicate this button — the redirect-URL fallback
     // (getVacancyIdFromUrl) is the safety net for the endless-loop prevention.
@@ -657,19 +640,19 @@
         const card = btn.closest('[data-qa="vacancy-serp__vacancy"]');
         if (card) {
             const m  = card.querySelector('[data-qa="serp-item__title"]')
-                          ?.href?.match(/\/vacancy\/(\d+)/);
+                          ?.href?.match(VACANCY_ID_RE);
             if (m) return m[1];
             const m2 = card.querySelector('a[href*="/vacancy/"]')
-                           ?.href?.match(/\/vacancy\/(\d+)/);
+                           ?.href?.match(VACANCY_ID_RE);
             if (m2) return m2[1];
         }
         for (const wrap of [btn.closest("article"), btn.closest("li")]) {
             const m = wrap?.querySelector('a[href*="/vacancy/"]')
-                         ?.href?.match(/\/vacancy\/(\d+)/);
+                         ?.href?.match(VACANCY_ID_RE);
             if (m) return m[1];
         }
         const m3 = (btn.getAttribute("href") || btn.getAttribute("data-url") || "")
-                   .match(/\/vacancy\/(\d+)/);
+                   .match(VACANCY_ID_RE);
         if (m3) return m3[1];
 
         // All strategies failed — log enough context to update selectors
@@ -942,9 +925,13 @@
             #as-panel.as-dark .as-cc{background:#181825!important;border-color:#313244!important;color:#cdd6f4!important}
             #as-panel.as-dark .as-cc b{color:#cdd6f4!important}
             #as-panel.as-dark #as-complex-cell{background:#2a2000!important;border-color:#5c4a00!important}
+            #as-panel.as-dark #as-complex-cell:hover{background:#3a3000!important}
             #as-panel.as-dark #as-log-header{color:#a6adc8!important}
             #as-panel.as-dark #as-copy-btn{background:#313244!important;color:#cdd6f4!important;border-color:#45475a!important}
             #as-panel.as-dark #as-mini-status{color:#cdd6f4!important}
+            #as-complex-cell:hover{background:#ffe69c!important}
+            #as-settings-btn:hover{background:#e0e0e0!important}
+            #as-clear-btn:hover{background:#ffe0e0!important}
 
             /* ── Settings dialog ── */
             #as-settings-dlg.as-dark{background:#1e1e2e!important;color:#cdd6f4!important}
@@ -1053,18 +1040,9 @@
         });
     };
 
-    // Wires the yellow (−) collapse button and keeps the mini-status span
-    // in sync with the collapsed state.
-    //
-    // Collapsed state:
-    //   • #as-panel-body hidden  → panel shrinks to title bar only
-    //   • #as-mini-status shown  → tiny "· 12✅" counter inside the title bar
-    //   • drag handle bottom border removed → clean pill shape
-    //   • panel min-width reduced so it doesn't reserve 360px as a narrow strip
-    //
-    // Expanded state: everything restored.
-    //
-    // State persisted in GM storage so it survives page reloads.
+    // Wires the (−) collapse button: hides #as-panel-body, shows the mini
+    // status counter in the title bar, and shrinks panel width. State
+    // persisted in GM storage so it survives reloads.
 
     const setupWindowControls = (panel) => {
         const collapseBtn = document.getElementById("as-collapse-btn");
@@ -1203,25 +1181,25 @@
             <!-- Hidden when minimized. All content below the title bar lives here. -->
             <div id="as-panel-body">
 
-                <!-- Main action buttons ─────────────────────────────────── -->
+                <!-- Action buttons ───────────────────────────────────────── -->
                 <button id="as-toggle-btn"
                     style="width:100%;padding:14px;background:${btnBg};color:#fff;border:none;
                     border-radius:8px;font-size:15px;font-weight:bold;cursor:pointer;
-                    margin-bottom:10px;">${btnTxt}
+                    margin-bottom:8px;">${btnTxt}
                 </button>
 
-                <button id="as-settings-btn"
-                    style="width:100%;padding:10px;background:#f0f0f0;color:#333;
-                    border:1px solid #ccc;border-radius:8px;cursor:pointer;margin-bottom:8px;">
-                    ⚙️ Settings
-                </button>
-
-                <button id="as-clear-btn"
-                    style="width:100%;padding:8px;background:#fff0f0;color:#d9534f;
-                    border:1px solid #f5c6c6;border-radius:8px;cursor:pointer;
-                    margin-bottom:14px;font-size:13px;">
-                    🗑 Clear session &amp; logs
-                </button>
+                <div style="display:flex;gap:6px;margin-bottom:14px;">
+                    <button id="as-settings-btn"
+                        style="flex:1;padding:9px;background:#f0f0f0;color:#333;
+                        border:1px solid #ccc;border-radius:8px;cursor:pointer;font-size:13px;">
+                        ⚙️ Settings
+                    </button>
+                    <button id="as-clear-btn"
+                        style="flex:1;padding:9px;background:#fff0f0;color:#d9534f;
+                        border:1px solid #f5c6c6;border-radius:8px;cursor:pointer;font-size:13px;">
+                        🗑 Clear
+                    </button>
+                </div>
 
                 <!-- Counters ────────────────────────────────────────────── -->
                 <div style="margin-bottom:14px;font-size:13px;color:#444;
@@ -1230,13 +1208,10 @@
                         border-radius:6px;padding:6px 4px;">
                         ✅ Sent<br><b id="as-sent">${successCount}</b>
                     </div>
-                    <!-- Clickable: opens skipped jobs popup -->
                     <div id="as-complex-cell" class="as-cc"
                         style="background:#fff3cd;border:1px solid #ffc107;border-radius:6px;
                         padding:6px 4px;cursor:pointer;transition:background .15s;"
-                        title="Click to view skipped jobs"
-                        onmouseenter="this.style.background='#ffe69c'"
-                        onmouseleave="this.style.background='#fff3cd'">
+                        title="Click to view skipped jobs">
                         ⏩ Skipped
                         <span style="font-size:10px;color:#999;vertical-align:super;"
                             title="Jobs requiring a full form — skipped automatically.">?</span>
@@ -1467,18 +1442,9 @@
         });
     };
 
-    // hh.ru resume pages require the user to be logged in. Since this script
-    // runs on *.hh.ru and the user is already authenticated, fetch() with
-    // credentials:'include' works on the same domain — no CORS issue.
-    //
-    // We parse the <title> element from the response HTML. hh.ru titles for
-    // resume pages have the form:
-    //   "Желаемая должность — Имя Фамилия — Резюме на hh.ru"
-    // We take everything before the first " — " as the position/title.
-    //
-    // Returns the extracted label string, or "" on any failure (network error,
-    // not logged in, hh.ru changed the title format, etc.).
-    // The caller treats "" as "couldn't fetch — keep the user-typed label".
+    // Fetches the resume's <title> from hh.ru (same-origin, credentials:include
+    // — user is already logged in) and takes the text before the first " — ".
+    // Returns "" on any failure; caller keeps the user-typed label in that case.
     const fetchResumeTitle = async (id) => {
         if (!id) return "";
         try {
@@ -1508,20 +1474,9 @@
         }
     };
 
-    // Renders editResumes[] as a list of rows:
-    //   ● radio button | resume ID input | label (editable or "Fetching…") | 🗑
-    //
-    // editResumes: working copy [{id, label}, …] (mutated in place by UI)
-    // getActive / setActive: get and set the active index (like getIdx/setIdx
-    //   pattern used for templates)
-    //
-    // Design decisions:
-    // • Radio buttons use the name "as-resume-radio" so only one can be active.
-    // • Label field is pre-populated with the stored label; if empty it shows
-    //   a placeholder. The label is NOT auto-fetched here — fetching happens
-    //   on Save, so the dialog stays snappy.
-    // • Delete is disabled when only 1 resume exists (can't have zero).
-    // • Add button is disabled when 5 resumes exist.
+    // Renders editResumes[] as rows: radio | ID input | label | 🗑.
+    // Label is not auto-fetched here (only on Save, to keep dialog snappy).
+    // Delete disabled at 1 resume; Add disabled at 5.
     const buildResumeList = (container, editResumes, getActive, setActive) => {
         container.innerHTML = "";
 
@@ -2187,6 +2142,7 @@
                         if (submitBtn) {
                             await humanInteract(submitBtn);
                             successCount++;
+                            if (vid) appliedIds.add(vid); // accurate badge tracking
                             logApplication(vid, jobTitle, isInvalid ? "(no cover)" : coverLetter);
 
                             // Check for daily 200-reply limit BEFORE persisting
