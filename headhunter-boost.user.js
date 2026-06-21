@@ -77,6 +77,33 @@
         catch (_) { return fb; }
     };
 
+    // Writes multiple GM keys from a plain object, e.g. gmSetMany({a: 1, b: 2}).
+    // Each write is individually guarded so one failure doesn't block the rest;
+    // failures are logged via `log()` once the panel exists, console.error always.
+    const gmSetMany = (obj) => {
+        for (const [key, val] of Object.entries(obj)) {
+            try { GM_setValue(key, val); }
+            catch (e) {
+                console.error(`[${BRAND}] GM_setValue("${key}") failed:`, e);
+                if (typeof log === "function") log(`❌ GM_setValue("${key}") failed: ${e.message}`);
+            }
+        }
+    };
+
+    // Creates and appends a full-screen, flex-centered dim backdrop — the
+    // shared shell used by showLimitModal, showConfirm, and showComplexPopup.
+    // Caller appends their own content box into the returned element.
+    // onOutsideClick (optional) fires when the backdrop itself is clicked.
+    const _overlay = (onOutsideClick) => {
+        const ov = document.createElement("div");
+        ov.style.cssText =
+            "position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:2147483648;" +
+            "display:flex;align-items:center;justify-content:center;";
+        document.body.appendChild(ov);
+        if (onOutsideClick) ov.addEventListener("click", e => { if (e.target === ov) onOutsideClick(); });
+        return ov;
+    };
+
     // Shown in Settings. User can edit, add (up to 5), or delete.
     // Persisted under GM key "userTemplates". Cleared only by deleting in Settings.
     // {JOB_TITLE} is replaced with the vacancy title at send time.
@@ -168,18 +195,14 @@
     // Each GM_setValue is wrapped separately so a partial failure is visible.
     // In practice Tampermonkey's GM_setValue never throws, but a corrupted
     // storage quota or sandbox issue would otherwise silently drop state.
-    const persistState = () => {
-        const write = (key, val) => {
-            try { GM_setValue(key, val); }
-            catch (e) { log(`❌ GM_setValue("${key}") failed: ${e.message}`); }
-        };
-        write("isRunning",          isRunning);
-        write("successCount",       successCount);
-        write("complexCount",       complexCount);
-        write("originalSearchUrl",  originalSearchUrl);
-        write("processedIds",       JSON.stringify([...processedIds]));
-        write("appliedIds",         JSON.stringify([...appliedIds]));
-    };
+    const persistState = () => gmSetMany({
+        isRunning,
+        successCount,
+        complexCount,
+        originalSearchUrl,
+        processedIds: JSON.stringify([...processedIds]),
+        appliedIds:   JSON.stringify([...appliedIds]),
+    });
 
     const clearSession = () => {
         isRunning = false; successCount = 0; complexCount = 0;
@@ -187,8 +210,7 @@
         complexJobs = []; logLines = [];
         _invalidateSkippedCache();
         persistState();
-        try { GM_setValue("complexJobs", "[]"); }
-        catch (e) { log(`❌ GM_setValue("complexJobs") failed: ${e.message}`); }
+        gmSetMany({ complexJobs: "[]" });
     };
 
     // hh.ru is a React SPA. DOM mutations can re-trigger init() →
@@ -269,7 +291,7 @@
         const newDelay = sampleDelay();
         log(`🎲 Delay rotated → ${newDelay} ms  (next rotation in ${_nextRotateAt} sends)`);
         config.DELAY_MS = newDelay;
-        GM_setValue("delayMs", newDelay); // persist so resumed sessions keep it
+        gmSetMany({ delayMs: newDelay }); // persist so resumed sessions keep it
     };
 
     // hh.ru displays this exact text when the 200-reply daily cap is hit.
@@ -320,10 +342,7 @@
         playAlertTone();
 
         // Modal popup with the exact hh.ru message + advice
-        const overlay = document.createElement("div");
-        overlay.style.cssText =
-            "position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:2147483648;" +
-            "display:flex;align-items:center;justify-content:center;";
+        const overlay = _overlay(() => overlay.remove());
 
         const box = document.createElement("div");
         box.style.cssText =
@@ -346,10 +365,7 @@
             </button>`;
 
         overlay.appendChild(box);
-        document.body.appendChild(overlay);
-
         box.querySelector("#as-limit-ok").onclick = () => overlay.remove();
-        overlay.addEventListener("click", e => { if (e.target === overlay) overlay.remove(); });
     };
 
     // Newest-first list. Live panel shows [HH:MM:SS] msg; copy adds [unix:N].
@@ -719,14 +735,12 @@
         complexJobs.unshift(job);
         if (complexJobs.length > 200) complexJobs.pop();
         _invalidateSkippedCache();
-        GM_setValue("complexJobs", JSON.stringify(complexJobs));
+        gmSetMany({ complexJobs: JSON.stringify(complexJobs) });
     };
 
     const showComplexPopup = () => {
-        const overlay = document.createElement("div");
-        overlay.style.cssText =
-            "position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:2147483648;" +
-            "display:flex;align-items:center;justify-content:center;";
+        const close = () => overlay.remove();
+        const overlay = _overlay(close);
 
         const modal = document.createElement("div");
         modal.style.cssText =
@@ -806,11 +820,8 @@
 
         modal.append(headerEl, bodyEl);
         overlay.appendChild(modal);
-        document.body.appendChild(overlay);
 
-        const close = () => overlay.remove();
         closeBtn.onclick = close;
-        overlay.addEventListener("click", e => { if (e.target === overlay) close(); });
 
         copyBtn.onclick = () => {
             const text = complexJobs.map(j => `${j.title || j.id}\t${j.url || ""}`).join("\n");
@@ -823,7 +834,7 @@
             complexJobs   = [];
             complexCount  = 0;
             _invalidateSkippedCache();
-            GM_setValue("complexJobs", "[]");
+            gmSetMany({ complexJobs: "[]" });
             persistState();
             updateCounters();
             renderList();
@@ -866,10 +877,8 @@
     // Uses a custom modal because window.confirm is suppressed in some
     // cross-origin iframe contexts on modern browsers.
     const showConfirm = (message) => new Promise(resolve => {
-        const overlay = document.createElement("div");
-        overlay.style.cssText =
-            "position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:2147483648;" +
-            "display:flex;align-items:center;justify-content:center;";
+        const close = v => { overlay.remove(); resolve(v); };
+        const overlay = _overlay(() => close(false));
 
         const box = document.createElement("div");
         box.style.cssText =
@@ -890,12 +899,8 @@
             </div>`;
 
         overlay.appendChild(box);
-        document.body.appendChild(overlay);
-
-        const close = v => { overlay.remove(); resolve(v); };
         box.querySelector("#conf-ok").onclick     = () => close(true);
         box.querySelector("#conf-cancel").onclick = () => close(false);
-        overlay.addEventListener("click", e => { if (e.target === overlay) close(false); });
     });
 
     // Drag by the title bar; ↘️ button snaps back to default bottom-right corner.
@@ -978,7 +983,7 @@
         document.getElementById("as-panel")?.classList.toggle("as-dark", dark);
         document.getElementById("as-settings-dlg")?.classList.toggle("as-dark", dark);
         config.DARK_THEME = dark;
-        GM_setValue("darkTheme", dark);
+        gmSetMany({ darkTheme: dark });
         dbg(`theme → ${dark ? "dark" : "light"}`);
     };
 
@@ -1026,16 +1031,13 @@
             if (!dragging) return;
             dragging = false;
             handle.style.cursor = "grab";
-            GM_setValue("panelPos", JSON.stringify({
-                left: panel.style.left,
-                top:  panel.style.top
-            }));
+            gmSetMany({ panelPos: JSON.stringify({ left: panel.style.left, top: panel.style.top }) });
         });
 
         resetBtn.addEventListener("click", () => {
             panel.style.left = "auto"; panel.style.top    = "auto";
             panel.style.right = "20px"; panel.style.bottom = "20px";
-            GM_setValue("panelPos", "");
+            gmSetMany({ panelPos: "" });
             log("📌 Panel position reset to bottom-right");
         });
     };
@@ -1090,7 +1092,7 @@
                 panel.style.minWidth                = "360px";
                 panel.style.padding                 = "16px";
             }
-            GM_setValue("panelCollapsed", collapsed);
+            gmSetMany({ panelCollapsed: collapsed });
         };
 
         // Expose a refresh helper for updateCounters so the mini label stays current
@@ -1928,15 +1930,17 @@
                 config.RESUMES           = validResumes;
                 config.ACTIVE_RESUME_IDX = finalActiveIdx;
 
-                GM_setValue("resumes",        JSON.stringify(validResumes));
-                GM_setValue("activeResumeIdx", finalActiveIdx);
-                GM_setValue("delayMs",         config.DELAY_MS);
-                GM_setValue("templateId",      config.TEMPLATE_ID);
-                GM_setValue("userTemplates",   JSON.stringify(coverTemplates));
-                GM_setValue("randEnabled",     config.RAND_ENABLED);
-                GM_setValue("randMin",         config.RAND_MIN);
-                GM_setValue("randMax",         config.RAND_MAX);
-                GM_setValue("tmplRandom",      config.TMPL_RANDOM);
+                gmSetMany({
+                    resumes:        JSON.stringify(validResumes),
+                    activeResumeIdx: finalActiveIdx,
+                    delayMs:         config.DELAY_MS,
+                    templateId:      config.TEMPLATE_ID,
+                    userTemplates:   JSON.stringify(coverTemplates),
+                    randEnabled:     config.RAND_ENABLED,
+                    randMin:         config.RAND_MIN,
+                    randMax:         config.RAND_MAX,
+                    tmplRandom:      config.TMPL_RANDOM,
+                });
 
                 // ── Success feedback ─────────────────────────────────────────
                 saveBtn.textContent   = "✅ Saved!";
